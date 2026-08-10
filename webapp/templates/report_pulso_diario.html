@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+    @page { size: A4; margin: 1.5cm; }
+    body { font-family: Helvetica, sans-serif; color: #1f2430; font-size: 10pt; }
+    .encabezado { background-color: #0b1f3a; color: #ffffff; padding: 16pt; border-radius: 4pt; }
+    .marca { color: #8fb8ff; font-size: 8pt; letter-spacing: 2pt; }
+    .etiqueta { color: #ffb703; font-size: 8pt; letter-spacing: 2pt; margin-top: 4pt; }
+    .titulo { color: #ffffff; font-size: 18pt; font-weight: bold; margin-top: 2pt; }
+    .subtitulo { color: #b7c3d9; font-size: 9pt; margin-top: 2pt; }
+
+    .seccion-titulo { font-size: 12pt; font-weight: bold; color: #0b1f3a; margin-top: 18pt; margin-bottom: 4pt; }
+    .seccion-desc { font-size: 8.5pt; color: #667085; margin-bottom: 8pt; }
+
+    table.metricas { width: 100%; border-collapse: separate; border-spacing: 6pt 0; }
+    table.metricas td {
+        background-color: #f6f7fb; border: 1pt solid #e2e5ea; border-radius: 4pt;
+        padding: 8pt; width: 33%; vertical-align: top;
+    }
+    .metrica-etiqueta { font-size: 7.5pt; color: #667085; letter-spacing: 0.5pt; }
+    .metrica-numero { font-size: 16pt; font-weight: bold; color: #0b1f3a; margin-top: 2pt; }
+
+    table.agente-card { width: 100%; border-collapse: collapse; margin-bottom: 10pt; }
+    table.agente-card td { background-color: #0f2547; color: #ffffff; padding: 6pt 10pt; }
+    .fila-nombre td { padding-top: 10pt; }
+    .fila-eventos td { padding-bottom: 10pt; }
+    .agente-rank { color: #8fb8ff; font-size: 8pt; font-weight: bold; }
+    .agente-nombre { color: #ffffff; font-size: 11pt; font-weight: bold; }
+    .celda-critico { text-align: right; }
+    .badge-critico { background-color: #dc2626; color: #ffffff; font-size: 6.5pt; padding: 2pt 6pt; }
+    .agente-resumen { font-size: 8pt; color: #cbd5e1; }
+    .agente-resumen b { color: #ffffff; }
+    .evento { font-size: 7.5pt; color: #e2e8f0; margin-top: 3pt; }
+    .evento .archivo { font-family: Courier, monospace; color: #93c5fd; }
+    .mas { font-size: 7pt; color: #93a3bd; font-style: italic; }
+</style>
+</head>
+<body>
+    <div class="encabezado">
+        <div class="marca">PREA VOICE ANALYTICS</div>
+        <div class="etiqueta">PULSO DIARIO OPERATIVO</div>
+        <div class="titulo">{{ team_name }}</div>
+        <div class="subtitulo">Reporte del {{ data.report_date_label }}</div>
+    </div>
+
+    {% if not data.has_data %}
+        <p style="margin-top:20pt; font-size:11pt; color:#667085;">No hay información para esta fecha.</p>
+    {% else %}
+    <div class="seccion-titulo">01 &middot; El pulso del día</div>
+    <table class="metricas">
+        <tr>
+            <td>
+                <div class="metrica-etiqueta">LLAMADAS ANALIZADAS</div>
+                <div class="metrica-numero">{{ data.total_calls }}</div>
+            </td>
+            <td>
+                <div class="metrica-etiqueta">EVENTOS DE TIEMPO MUERTO &gt;60S</div>
+                <div class="metrica-numero">{{ data.total_events }}</div>
+            </td>
+            <td>
+                <div class="metrica-etiqueta">TIEMPO MUERTO TOTAL</div>
+                <div class="metrica-numero">{{ data.total_dead_minutes }} min</div>
+            </td>
+        </tr>
+    </table>
+
+    <div class="seccion-titulo">02 &middot; Agentes con tiempo muerto detectado</div>
+    <div class="seccion-desc">
+        Silencios mayores a 60 segundos dentro de una llamada, de mayor a menor por agente.
+        Calculado directamente de las marcas de tiempo de la transcripción.
+    </div>
+
+    {% if not data.agents %}
+        <p class="seccion-desc">Ningún agente tuvo tiempo muerto &gt;60 seg este día.</p>
+    {% endif %}
+    {% for agent in data.agents %}
+    <table class="agente-card">
+        <tr class="fila-nombre">
+            <td>
+                <span class="agente-rank">#{{ agent.rank }}</span>
+                <span class="agente-nombre">{{ agent.agent_name }}</span>
+            </td>
+            <td class="celda-critico">{% if agent.critico %}<span class="badge-critico">REVISAR</span>{% endif %}</td>
+        </tr>
+        <tr>
+            <td colspan="2" class="agente-resumen">
+                <b>{{ agent.event_count }}</b> evento{{ "s" if agent.event_count != 1 else "" }} de tiempo muerto
+                &middot; <b>{{ agent.total_minutes }}</b> min en total
+            </td>
+        </tr>
+        <tr class="fila-eventos">
+            <td colspan="2">
+                {% for e in agent.events %}
+                <div class="evento">
+                    <span class="archivo">{{ e.filename }}</span>
+                    &mdash; hueco de {{ (e.gap_ms / 1000) | round(1) }}s [{{ e.gap_start_ms }}-{{ e.gap_end_ms }}ms]
+                </div>
+                {% endfor %}
+                {% if agent.events_extra %}<div class="mas">+{{ agent.events_extra }} más</div>{% endif %}
+            </td>
+        </tr>
+    </table>
+    {% endfor %}
+    {% endif %}
+</body>
+</html>

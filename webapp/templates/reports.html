@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Reportes — PREA Voice Analytics{% endblock %}
+{% block content %}
+    <h1>Reportes</h1>
+    <p class="vacio">Pulso Diario Operativo — datos reales de las llamadas cargadas ese día.</p>
+
+    <form action="/reports" method="get" style="margin: 1rem 0;">
+        <label for="date" style="display:inline-block; margin-right:0.5rem;">Fecha</label>
+        <input type="date" id="date" name="date" value="{{ selected_date }}"
+               onchange="this.form.submit()" style="width:auto; display:inline-block; margin:0;">
+    </form>
+
+    {% if not data.has_data %}
+        <p class="vacio">No hay información para esta fecha.</p>
+    {% else %}
+        <div class="metricas">
+            <div class="metrica">
+                <div class="numero">{{ data.total_calls }}</div>
+                <div class="etiqueta">Llamadas analizadas</div>
+            </div>
+            <div class="metrica">
+                <div class="numero">{{ data.total_events }}</div>
+                <div class="etiqueta">Eventos de tiempo muerto &gt;60 seg</div>
+            </div>
+            <div class="metrica">
+                <div class="numero">{{ data.total_dead_minutes }} min</div>
+                <div class="etiqueta">Tiempo muerto total</div>
+            </div>
+        </div>
+
+        <p style="margin-top:1.25rem;">
+            <a class="btn" href="/reports/pulso-diario?date={{ selected_date }}" target="_blank">⬇ Descargar PDF</a>
+        </p>
+
+        <h2>Agentes con tiempo muerto detectado</h2>
+        {% if data.agents %}
+            {% for agent in data.agents %}
+            <div class="caja">
+                <strong>#{{ agent.rank }} {{ agent.agent_name }}</strong>
+                {% if agent.critico %}<span class="badge badge-riesgo">revisar</span>{% endif %}
+                <p>{{ agent.event_count }} evento{{ "s" if agent.event_count != 1 else "" }} &middot; {{ agent.total_minutes }} min en total</p>
+                {% for e in agent.events %}
+                <p class="cita">
+                    <a href="/calls/{{ e.call_id }}">{{ e.filename }}</a>
+                    &mdash; hueco de {{ (e.gap_ms / 1000) | round(1) }}s
+                    <span class="tiempo">[{{ e.gap_start_ms }}-{{ e.gap_end_ms }}ms]</span>
+                </p>
+                {% endfor %}
+                {% if agent.events_extra %}<p class="vacio">+{{ agent.events_extra }} más</p>{% endif %}
+            </div>
+            {% endfor %}
+        {% else %}
+            <p class="vacio">Ningún agente tuvo tiempo muerto &gt;60 seg este día.</p>
+        {% endif %}
+    {% endif %}
+{% endblock %}

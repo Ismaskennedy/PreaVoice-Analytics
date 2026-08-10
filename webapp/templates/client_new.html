@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Nuevo cliente — PREA Voice Analytics{% endblock %}
+{% block content %}
+    <a class="volver" href="/clients">&larr; Volver a clientes</a>
+    <h1>Nuevo cliente</h1>
+    <form class="tarjeta" action="/clients" method="post">
+        <label for="name">Nombre del cliente / cartera</label>
+        <input type="text" id="name" name="name" required placeholder="Ej. Bradescard">
+
+        <label for="code">Código corto (sin espacios, para identificarlo internamente)</label>
+        <input type="text" id="code" name="code" required placeholder="Ej. bradescard">
+
+        <button type="submit">Crear cliente</button>
+    </form>
+{% endblock %}

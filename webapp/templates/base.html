@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}PREA Voice Analytics{% endblock %}</title>
+    <style>
+        :root {
+            --fondo: #0d0f14;
+            --fondo-elevado: #12151c;
+            --tarjeta: #171b24;
+            --tarjeta-hover: #1e2330;
+            --borde: #262b38;
+            --texto: #e8eaf0;
+            --texto-suave: #8891a5;
+            --azul: #4f8cff;
+            --azul-oscuro: #2f6fe0;
+            --azul-tint: rgba(79, 140, 255, 0.16);
+            --verde-bg: rgba(34, 197, 94, 0.16); --verde-fg: #4ade80;
+            --rojo-bg: rgba(248, 113, 113, 0.16); --rojo-fg: #f87171;
+            --gris-bg: rgba(139, 145, 165, 0.16); --gris-fg: #a3aabd;
+            --amarillo-bg: rgba(250, 204, 21, 0.16); --amarillo-fg: #facc15;
+            --radio: 0.7rem;
+            --sombra: 0 4px 16px rgba(0, 0, 0, 0.35);
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: "Segoe UI", system-ui, sans-serif;
+            margin: 0;
+            color: var(--texto);
+            background: var(--fondo);
+            min-height: 100vh;
+        }
+        .contenedor { max-width: 1100px; margin: 0 auto; padding: 0 1.5rem 3rem; }
+        .contenedor.ancho { max-width: 100%; padding: 0; }
+
+        nav.barra {
+            background: var(--fondo-elevado);
+            border-bottom: 1px solid var(--borde);
+            padding: 0.8rem 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+        nav.barra .marca { font-weight: 700; color: var(--texto); text-decoration: none; font-size: 1.05rem; display: flex; align-items: center; gap: 0.5rem; }
+        nav.barra .marca .punto { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--azul); display: inline-block; }
+        nav.barra .enlaces { display: flex; align-items: center; gap: 1.4rem; flex-wrap: wrap; }
+        nav.barra a { color: var(--texto-suave); text-decoration: none; font-size: 0.9rem; transition: color 0.15s; }
+        nav.barra a:hover { color: var(--texto); }
+        nav.barra a.activo { color: var(--azul); }
+        nav.barra .usuario { color: var(--texto-suave); font-size: 0.85rem; }
+        nav.barra form { margin: 0; }
+        nav.barra button.enlace {
+            background: none; border: none; color: var(--texto-suave); cursor: pointer;
+            font-size: 0.9rem; padding: 0; font-family: inherit;
+        }
+        nav.barra button.enlace:hover { color: var(--rojo-fg); }
+
+        h1 { font-size: 1.4rem; margin: 1.75rem 0 0.25rem; font-weight: 600; }
+        h2 { font-size: 1rem; margin: 2rem 0 0.75rem; color: var(--texto); font-weight: 600; }
+        p { line-height: 1.55; }
+
+        table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; background: var(--tarjeta); border-radius: var(--radio); overflow: hidden; border: 1px solid var(--borde); }
+        th, td { padding: 0.65rem 0.9rem; text-align: left; border-bottom: 1px solid var(--borde); }
+        th { background: var(--fondo-elevado); color: var(--texto-suave); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: var(--tarjeta-hover); }
+        a { color: var(--azul); }
+
+        form.tarjeta, .caja {
+            background: var(--tarjeta);
+            border: 1px solid var(--borde);
+            border-radius: var(--radio);
+            padding: 1.1rem 1.3rem;
+            margin: 0.75rem 0;
+        }
+        label { font-size: 0.85rem; color: var(--texto-suave); display: block; margin-bottom: 0.35rem; }
+        input[type="file"], input[type="text"], input[type="email"], input[type="password"], select {
+            width: 100%; padding: 0.55rem 0.7rem; border: 1px solid var(--borde); border-radius: 0.45rem;
+            font-size: 0.95rem; margin-bottom: 0.75rem; font-family: inherit;
+            background: var(--fondo-elevado); color: var(--texto);
+        }
+        input:focus, select:focus { outline: none; border-color: var(--azul); }
+        button, input[type="submit"] {
+            background: var(--azul); color: white; border: none; border-radius: 0.45rem;
+            padding: 0.55rem 1.1rem; font-size: 0.9rem; cursor: pointer; font-family: inherit;
+            font-weight: 600; transition: background 0.15s;
+        }
+        button:hover { background: var(--azul-oscuro); }
+        button.secundario { background: var(--fondo-elevado); color: var(--texto); border: 1px solid var(--borde); }
+        button.secundario:hover { background: var(--tarjeta-hover); }
+        a.btn {
+            display: inline-flex; align-items: center; gap: 0.4rem;
+            background: var(--azul); color: white; border-radius: 0.45rem;
+            padding: 0.6rem 1.2rem; font-size: 0.9rem; font-weight: 600;
+            text-decoration: none; transition: background 0.15s;
+        }
+        a.btn:hover { background: var(--azul-oscuro); }
+        .checkbox-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.9rem; }
+        .checkbox-row input { width: auto; margin: 0; }
+        .checkbox-row label { display: inline; margin: 0; font-size: 0.85rem; }
+
+        .vacio { color: var(--texto-suave); font-style: italic; }
+        audio { width: 100%; margin-top: 1rem; }
+        .segmento { margin: 0.4rem 0; }
+        .segmento .tiempo { color: var(--texto-suave); font-size: 0.85em; margin-right: 0.5em; }
+        .badge { display: inline-block; padding: 0.2em 0.65em; border-radius: 1em; font-size: 0.78em; font-weight: 600; }
+        .badge-cumplido { background: var(--verde-bg); color: var(--verde-fg); }
+        .badge-no-cumplido { background: var(--rojo-bg); color: var(--rojo-fg); }
+        .badge-sin-evidencia { background: var(--gris-bg); color: var(--gris-fg); }
+        .badge-riesgo { background: var(--amarillo-bg); color: var(--amarillo-fg); margin-left: 0.4em; }
+        .badge-audio-buena { background: var(--verde-bg); color: var(--verde-fg); }
+        .badge-audio-regular { background: var(--amarillo-bg); color: var(--amarillo-fg); }
+        .badge-audio-mala { background: var(--rojo-bg); color: var(--rojo-fg); }
+        .badge-rol { background: var(--azul-tint); color: var(--azul); }
+        .cita { font-style: italic; color: var(--texto-suave); margin: 0.2em 0 0 0; }
+        .volver { display: inline-block; margin-bottom: 1rem; font-size: 0.85rem; color: var(--texto-suave); }
+        .volver:hover { color: var(--texto); }
+        .score { font-size: 2rem; font-weight: 700; color: var(--azul); }
+        .metricas { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.75rem; }
+        .metrica { background: var(--tarjeta); border: 1px solid var(--borde); border-radius: var(--radio); padding: 1.1rem 1.3rem; flex: 1; min-width: 150px; }
+        .metrica .numero { font-size: 1.9rem; font-weight: 700; color: var(--azul); }
+        .metrica .etiqueta { color: var(--texto-suave); font-size: 0.82rem; margin-top: 0.2rem; }
+        .error { background: var(--rojo-bg); color: var(--rojo-fg); padding: 0.6rem 0.9rem; border-radius: 0.45rem; margin-bottom: 1rem; font-size: 0.9rem; }
+        .centrado { max-width: 380px; margin: 4rem auto; text-align: center; }
+        .logo-login { max-width: 130px; margin: 0 auto 1.25rem; display: block; background: #fff; border-radius: 1rem; padding: 0.75rem; box-shadow: var(--sombra); }
+        details.colapsable { margin-bottom: 1.25rem; }
+        details.colapsable summary { cursor: pointer; color: var(--azul); font-size: 0.9rem; margin-bottom: 0.5rem; }
+
+        .avatar {
+            width: 2.2rem; height: 2.2rem; border-radius: 50%; background: var(--azul-tint); color: var(--azul);
+            display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem;
+            flex-shrink: 0;
+        }
+    </style>
+</head>
+<body>
+    {% if user %}
+    <nav class="barra">
+        <a class="marca" href="/"><span class="punto"></span>PREA Voice Analytics</a>
+        <div class="enlaces">
+            <a href="/">Dashboard</a>
+            <a href="/calls">Llamadas</a>
+            {% if user.role in ("calidad", "admin") %}<a href="/clients">Clientes</a>{% endif %}
+            {% if user.role in ("calidad", "admin") %}<a href="/reports">Reportes</a>{% endif %}
+            {% if user.role == "admin" %}<a href="/users">Usuarios</a>{% endif %}
+            <span class="usuario">{{ user.full_name }} <span class="badge badge-rol">{{ user.role }}</span></span>
+            <form action="/logout" method="post"><button type="submit" class="enlace">Salir</button></form>
+        </div>
+    </nav>
+    {% endif %}
+    <div class="contenedor {{ 'ancho' if ancho }}">
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

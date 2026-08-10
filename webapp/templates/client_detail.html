@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}{{ client.name }} — PREA Voice Analytics{% endblock %}
+{% block content %}
+    <a class="volver" href="/clients">&larr; Volver a clientes</a>
+    <h1>{{ client.name }}</h1>
+    <p class="vacio">Código: {{ client.code }}</p>
+
+    <h2>Gestores asignados</h2>
+    {% if assigned_agents %}
+        <ul>
+        {% for a in assigned_agents %}
+            <li>{{ a.full_name }}</li>
+        {% endfor %}
+        </ul>
+    {% else %}
+        <p class="vacio">Ningún gestor asignado todavía.</p>
+    {% endif %}
+
+    <form class="tarjeta" action="/clients/{{ client.id }}/assign-agent" method="post">
+        <label for="agent_id">Asignar un gestor a este cliente</label>
+        <select id="agent_id" name="agent_id" required>
+            <option value="" disabled selected>Selecciona un gestor</option>
+            {% for a in all_agents %}
+            <option value="{{ a.id }}">{{ a.full_name }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit">Asignar</button>
+        <p class="vacio" style="margin-top:0.6rem; margin-bottom:0;">
+            Si el gestor ya estaba en otro cliente, se mueve a este. Sus llamadas viejas se quedan
+            con el cliente anterior — nunca cambian de dueño.
+        </p>
+    </form>
+
+    <h2>Guion esperado de la llamada</h2>
+    <p class="vacio">
+        Describe en tus palabras todo lo que debe cubrir una llamada de {{ client.name }} para
+        aprobarse — no solo lo prohibido, sino el flujo completo (saludo, verificación de identidad,
+        motivo de la llamada, negociación, cierre, etc). La IA lo usa como contexto general además
+        del checklist puntual de abajo.
+    </p>
+    <form class="tarjeta" action="/clients/{{ client.id }}/call-script" method="post">
+        <label for="call_script">Guion / instrucciones generales</label>
+        <textarea id="call_script" name="call_script" rows="8"
+                  placeholder="Ej. El asesor debe saludar, confirmar que habla con el titular, explicar el motivo de la llamada, mencionar el monto adeudado y los días de mora, ofrecer al menos una opción de pago o convenio, y cerrar confirmando un compromiso o la fecha de próximo contacto."
+                  style="width:100%; padding:0.55rem 0.7rem; border:1px solid var(--borde); border-radius:0.45rem; font-size:0.95rem; margin-bottom:0.75rem; font-family:inherit; background:var(--fondo-elevado); color:var(--texto); resize:vertical;">{{ client.call_script or "" }}</textarea>
+        <button type="submit">Guardar guion</button>
+    </form>
+
+    <h2>Checklist puntual — criterios específicos que sí o sí se revisan</h2>
+    <p class="vacio">
+        Además del guion de arriba, puedes agregar criterios puntuales de sí/no (por ejemplo, algo
+        que nunca debe decirse). Cada uno se revisa por separado con evidencia de la transcripción.
+    </p>
+
+    {% if checklist_items %}
+        {% for item in checklist_items %}
+        <div class="segmento">
+            {% if item.is_legal_risk %}<span class="badge badge-riesgo">riesgo legal</span>{% endif %}
+            {{ item.label }}
+        </div>
+        {% endfor %}
+    {% else %}
+        <p class="vacio">Todavía no hay criterios en el checklist de este cliente.</p>
+    {% endif %}
+
+    <form class="tarjeta" action="/clients/{{ client.id }}/checklist-items" method="post" style="margin-top:1rem;">
+        <label for="label">Nuevo criterio (en tus palabras)</label>
+        <input type="text" id="label" name="label" required
+               placeholder="Ej. Debe mencionar el número de referencia del pago">
+
+        <div class="checkbox-row">
+            <input type="checkbox" id="is_legal_risk" name="is_legal_risk" value="true">
+            <label for="is_legal_risk">
+                Es una práctica prohibida / riesgo legal (algo que NO debe pasar, no algo que sí)
+            </label>
+        </div>
+
+        <button type="submit">Agregar al checklist</button>
+    </form>
+{% endblock %}

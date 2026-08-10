@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Llamada — PREA Voice Analytics{% endblock %}
+{% block content %}
+    <a class="volver" href="/calls">&larr; Volver al listado</a>
+    <h1>{{ call.original_filename or "Llamada" }}</h1>
+    <p>
+        <strong>Cliente:</strong> {{ call.client_name }} &middot;
+        <strong>Gestor:</strong> {{ call.agent_name }} &middot;
+        <strong>Estado:</strong> {{ call.status }}
+    </p>
+
+    {% if audio_url %}
+    <audio controls src="{{ audio_url }}"></audio>
+    {% endif %}
+
+    <h2>Resumen de la llamada</h2>
+    {% if analysis and analysis.summary %}
+        <div class="caja">
+            {% if analysis.who_answered %}
+                <p>
+                    <strong>Contestó:</strong> {{ who_answered_labels.get(analysis.who_answered, analysis.who_answered) }}
+                </p>
+                <p class="cita">
+                    "{{ analysis.who_answered_quote }}"
+                    <span class="tiempo">[{{ analysis.who_answered_start_ms }}-{{ analysis.who_answered_end_ms }}ms]</span>
+                </p>
+            {% endif %}
+            <p>{{ analysis.summary }}</p>
+        </div>
+    {% else %}
+        <p class="vacio">Todavía no hay resumen para esta llamada.</p>
+    {% endif %}
+
+    <h2>Calificación</h2>
+    {% if evaluation %}
+        <p class="score">
+            {% if evaluation.score is not none %}{{ evaluation.score }}%{% else %}sin evaluar{% endif %}
+        </p>
+        {% if evaluation.status == "confirmed" %}
+            <p>Confirmada por {{ evaluation.confirmed_by_name }} el {{ evaluation.confirmed_at }}.</p>
+        {% else %}
+            <p>Borrador de la IA — todavía no la confirma Calidad.</p>
+            {% if can_confirm %}
+            <form action="/calls/{{ call.id }}/confirm" method="post">
+                <button type="submit">Confirmar evaluación</button>
+            </form>
+            {% else %}
+            <p class="vacio">Solo Calidad o un administrador pueden confirmar.</p>
+            {% endif %}
+        {% endif %}
+    {% else %}
+        <p class="vacio">Todavía no hay análisis para esta llamada.</p>
+    {% endif %}
+
+    <h2>Emociones y calidad de audio</h2>
+    {% if analysis %}
+        <div class="caja">
+            <strong>Asesor:</strong>
+            {% if analysis.agent_emotion %}
+                {{ analysis.agent_emotion }}
+                <p class="cita">
+                    "{{ analysis.agent_emotion_quote }}"
+                    <span class="tiempo">[{{ analysis.agent_emotion_start_ms }}-{{ analysis.agent_emotion_end_ms }}ms]</span>
+                </p>
+            {% else %}
+                <span class="vacio">no se pudo determinar</span>
+            {% endif %}
+        </div>
+        <div class="caja">
+            <strong>Deudor:</strong>
+            {% if analysis.debtor_emotion %}
+                {{ analysis.debtor_emotion }}
+                <p class="cita">
+                    "{{ analysis.debtor_emotion_quote }}"
+                    <span class="tiempo">[{{ analysis.debtor_emotion_start_ms }}-{{ analysis.debtor_emotion_end_ms }}ms]</span>
+                </p>
+            {% else %}
+                <span class="vacio">no se pudo determinar</span>
+            {% endif %}
+        </div>
+        <div class="caja">
+            <strong>Calidad de audio:</strong>
+            {% if analysis.audio_quality %}
+                <span class="badge badge-audio-{{ analysis.audio_quality }}">{{ analysis.audio_quality }}</span>
+                <p class="cita">{{ analysis.audio_quality_notes }}</p>
+            {% else %}
+                <span class="vacio">no se pudo estimar</span>
+            {% endif %}
+        </div>
+    {% else %}
+        <p class="vacio">Todavía no hay análisis para esta llamada.</p>
+    {% endif %}
+
+    <h2>Checklist</h2>
+    {% if findings %}
+        {% for finding in findings %}
+        <div class="segmento">
+            {% if finding.is_met == true %}
+                <span class="badge badge-cumplido">cumplido</span>
+            {% elif finding.is_met == false %}
+                <span class="badge badge-no-cumplido">no cumplido</span>
+            {% else %}
+                <span class="badge badge-sin-evidencia">sin evidencia</span>
+            {% endif %}
+            {% if finding.is_legal_risk %}<span class="badge badge-riesgo">riesgo legal</span>{% endif %}
+            <strong>{{ finding.label }}</strong>
+            {% if finding.evidence_quote %}
+            <p class="cita">
+                "{{ finding.evidence_quote }}"
+                <span class="tiempo">[{{ finding.evidence_start_ms }}-{{ finding.evidence_end_ms }}ms]</span>
+            </p>
+            {% endif %}
+        </div>
+        {% endfor %}
+    {% else %}
+        <p class="vacio">Todavía no hay hallazgos para esta llamada.</p>
+    {% endif %}
+
+    <h2>Áreas de oportunidad para el asesor</h2>
+    {% if mejora_llamada or cierre_negociacion %}
+        <div class="caja">
+            <strong>Cómo mejorar la llamada</strong>
+            {% if mejora_llamada %}
+                <ul>
+                {% for s in mejora_llamada %}
+                    <li>
+                        {{ s.suggestion }}
+                        {% if s.reference_quote %}
+                        <p class="cita">
+                            "{{ s.reference_quote }}"
+                            <span class="tiempo">[{{ s.reference_start_ms }}-{{ s.reference_end_ms }}ms]</span>
+                        </p>
+                        {% endif %}
+                    </li>
+                {% endfor %}
+                </ul>
+            {% else %}
+                <p class="vacio">Sin sugerencias — el asesor manejó bien la llamada en general.</p>
+            {% endif %}
+        </div>
+        <div class="caja">
+            <strong>Qué decir para cerrar la negociación</strong>
+            {% if cierre_negociacion %}
+                <ul>
+                {% for s in cierre_negociacion %}
+                    <li>
+                        {{ s.suggestion }}
+                        {% if s.reference_quote %}
+                        <p class="cita">
+                            "{{ s.reference_quote }}"
+                            <span class="tiempo">[{{ s.reference_start_ms }}-{{ s.reference_end_ms }}ms]</span>
+                        </p>
+                        {% endif %}
+                    </li>
+                {% endfor %}
+                </ul>
+            {% else %}
+                <p class="vacio">Sin sugerencias — el cierre ya estuvo bien encaminado.</p>
+            {% endif %}
+        </div>
+    {% else %}
+        <p class="vacio">Todavía no hay análisis para esta llamada.</p>
+    {% endif %}
+
+    <details class="colapsable">
+        <summary>Ver transcripción completa (evidencia detrás de las citas de arriba)</summary>
+        {% if segments %}
+            {% for segment in segments %}
+            <p class="segmento">
+                <span class="tiempo">[{{ segment.start_ms }}-{{ segment.end_ms }}ms]</span>
+                {{ segment.text }}
+            </p>
+            {% endfor %}
+        {% else %}
+            <p class="vacio">Todavía no hay transcripción para esta llamada.</p>
+        {% endif %}
+    </details>
+{% endblock %}

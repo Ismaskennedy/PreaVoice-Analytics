@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Usuarios — PREA Voice Analytics{% endblock %}
+{% block content %}
+    <h1>Usuarios</h1>
+    <p><a href="/users/new">+ Nuevo usuario</a></p>
+
+    {% if users %}
+    <table>
+        <thead>
+            <tr>
+                <th>Nombre</th>
+                <th>Correo</th>
+                <th>Rol</th>
+                <th>Código</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in users %}
+            <tr>
+                <td>{{ u.full_name }}</td>
+                <td>{{ u.email }}</td>
+                <td><span class="badge badge-rol">{{ u.role or "sin rol" }}</span></td>
+                <td>{{ u.external_code or "—" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="vacio">Todavía no hay usuarios.</p>
+    {% endif %}
+{% endblock %}

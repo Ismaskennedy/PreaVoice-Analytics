@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — PREA Voice Analytics{% endblock %}
+{% block content %}
+    <h1>Dashboard</h1>
+    <p class="vacio">Resumen de las llamadas analizadas.</p>
+
+    <div class="metricas">
+        <div class="metrica">
+            <div class="numero">{{ metrics.total_calls }}</div>
+            <div class="etiqueta">Llamadas cargadas</div>
+        </div>
+        <div class="metrica">
+            <div class="numero">{% if metrics.avg_score is not none %}{{ metrics.avg_score }}%{% else %}—{% endif %}</div>
+            <div class="etiqueta">Calificación promedio</div>
+        </div>
+        <div class="metrica">
+            <div class="numero">{{ metrics.legal_risk_count }}</div>
+            <div class="etiqueta">Llamadas con riesgo legal</div>
+        </div>
+    </div>
+
+    <h2>Cumplimiento por ítem del checklist</h2>
+    {% if checklist_stats %}
+    <div class="caja"><canvas id="grafica-checklist" height="90"></canvas></div>
+    {% else %}
+    <p class="vacio">Todavía no hay llamadas analizadas.</p>
+    {% endif %}
+
+    <h2>Calificación por llamada</h2>
+    {% if score_trend %}
+    <div class="caja"><canvas id="grafica-tendencia" height="90"></canvas></div>
+    {% else %}
+    <p class="vacio">Todavía no hay calificaciones para mostrar una tendencia.</p>
+    {% endif %}
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        const checklistLabels = {{ checklist_stats | map(attribute="label") | list | tojson }};
+        const checklistValues = {{ checklist_stats | map(attribute="porcentaje") | list | tojson }};
+        const trendLabels = {{ score_trend | map(attribute="etiqueta") | list | tojson }};
+        const trendValues = {{ score_trend | map(attribute="score") | list | tojson }};
+
+        Chart.defaults.color = "#8891a5";
+        Chart.defaults.borderColor = "#262b38";
+        const ejeY = { beginAtZero: true, max: 100, grid: { color: "#262b38" }, ticks: { color: "#8891a5" } };
+        const ejeX = { grid: { color: "#1a1e28" }, ticks: { color: "#8891a5" } };
+
+        if (checklistLabels.length) {
+            new Chart(document.getElementById("grafica-checklist"), {
+                type: "bar",
+                data: {
+                    labels: checklistLabels,
+                    datasets: [{ label: "% de llamadas que cumplieron", data: checklistValues, backgroundColor: "#4f8cff", borderRadius: 4 }],
+                },
+                options: { scales: { y: ejeY, x: ejeX }, plugins: { legend: { display: false } } },
+            });
+        }
+        if (trendLabels.length) {
+            new Chart(document.getElementById("grafica-tendencia"), {
+                type: "line",
+                data: {
+                    labels: trendLabels,
+                    datasets: [{ label: "Calificación", data: trendValues, borderColor: "#4f8cff", backgroundColor: "rgba(79,140,255,0.15)", fill: true, tension: 0.3 }],
+                },
+                options: { scales: { y: ejeY, x: ejeX }, plugins: { legend: { display: false } } },
+            });
+        }
+    </script>
+{% endblock %}
