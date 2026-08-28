@@ -24,9 +24,16 @@ _MESES = (
 # para medir campañas y detectar cruces). Deteccion por palabra clave, sin
 # IA -- no hace falta gastar credito de OpenAI en esto, solo transcripcion.
 CAMPAIGNS = {
-    "SPIN": ("spin",),
+    "SPIN": ("spin", "oxxo"),
     "BRADESCARD": ("bradescard",),
     "BANCO AZTECA": ("banco azteca", "azteca"),
+    # "despegar" y "walmart" son palabras de uso comun (el verbo "despegar",
+    # la tienda que cualquiera menciona sin relacion al banco) -- mas
+    # riesgo de falso positivo que el resto de las palabras clave de aqui.
+    "INVEX": (
+        "invex", "volaris", "manchester", "sicard", "cibanco",
+        "credomatic", "despegar", "walmart", "voyage",
+    ),
 }
 
 # Fechas dichas en la llamada ("15 de agosto", "20 de agosto de 2026") --
