@@ -127,8 +127,8 @@
                     {% endif %}
                 </td>
                 <td style="padding: 0.5rem 0.6rem;">
-                    {% if call.audio_filename %}
-                        <a href="/audio/{{ call.audio_filename }}" download>⬇ Descargar</a>
+                    {% if call.storage_path %}
+                        <a href="/audio/{{ call.call_id }}" download>⬇ Descargar</a>
                     {% else %}
                         <span class="vacio">sin archivo</span>
                     {% endif %}

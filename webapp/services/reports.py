@@ -14,8 +14,6 @@ from datetime import date
 
 from sqlalchemy import text
 
-from webapp.config import audio_url_path
-
 _MESES = (
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -169,7 +167,7 @@ def build_campaign_report(conn) -> dict:
                 "mismatch": bool(detected) and assigned not in [d.upper() for d in detected],
                 "dates_mentioned": _find_dates(normalized),
                 "agent_names_mentioned": _find_agent_names(normalized),
-                "audio_filename": audio_url_path(row["storage_path"]) if row["storage_path"] else None,
+                "storage_path": row["storage_path"],
             }
         )
 

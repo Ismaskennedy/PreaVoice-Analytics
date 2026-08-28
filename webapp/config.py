@@ -40,21 +40,6 @@ def sharded_recording_path(call_id, extension: str) -> Path:
     return path
 
 
-def audio_url_path(storage_path: str) -> str:
-    """La ruta que va despues de /audio/ para servir una grabacion (el
-    mount de StaticFiles si soporta subcarpetas, solo hay que pasarle la
-    ruta completa relativa a RECORDINGS_DIR, no solo el nombre del
-    archivo -- necesario desde que las grabaciones quedaron repartidas en
-    subcarpetas por call_id[:2])."""
-    path = Path(storage_path)
-    if not path.is_absolute():
-        path = Path(__file__).resolve().parent.parent / path
-    try:
-        rel = path.relative_to(RECORDINGS_DIR)
-    except ValueError:
-        rel = Path(path.name)
-    return str(rel).replace("\\", "/")
-
 # No se valida aqui (a diferencia de DATABASE_URL) porque las pruebas y
 # scripts que no tocan IA no deberian necesitarla. Se valida al usarla,
 # en webapp/openai_client.py.

@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -31,7 +31,7 @@ from webapp.auth import (
     require_role,
     verify_password,
 )
-from webapp.config import RECORDINGS_DIR, SECRET_KEY, audio_url_path, sharded_recording_path
+from webapp.config import RECORDINGS_DIR, SECRET_KEY, sharded_recording_path
 from webapp.db import tenant_connection
 from webapp.openai_client import get_openai_client
 from webapp.services.analysis import analyze, compute_score
@@ -40,9 +40,38 @@ from webapp.services.transcription import assess_audio_quality, transcribe
 
 app = FastAPI(title="PREA Voice Analytics")
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
-app.mount("/audio", StaticFiles(directory=str(RECORDINGS_DIR)), name="audio")
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+
+@app.get("/audio/{call_id}")
+def serve_audio(request: Request, call_id: str):
+    """Sirve la grabacion de una llamada por su call_id, leyendo el archivo
+    directo de la ruta guardada en la base -- ya NO por StaticFiles.
+    StaticFiles hace su propia verificacion de que el archivo resuelto
+    quede dentro del directorio montado (proteccion normal contra fugas
+    de ruta), pero en Linux, con el disco de grabaciones montado aparte,
+    esa verificacion puede rechazar un archivo perfectamente valido si el
+    punto de montaje no resuelve exactamente igual cada vez -- mismo
+    sintoma que vimos: el mismo archivo se abre bien para transcribir
+    (open() directo) pero no se sirve por HTTP. Leer directo por
+    storage_path evita el problema de raiz, sin depender de como este
+    montado el disco."""
+    user = require_login(request)
+    if isinstance(user, RedirectResponse):
+        return user
+
+    with tenant_connection() as (conn, _tenant_id):
+        row = conn.execute(
+            text("SELECT storage_path, format FROM app.recordings WHERE call_id = :call_id"),
+            {"call_id": call_id},
+        ).mappings().one_or_none()
+
+    if row is None or not row["storage_path"] or not Path(row["storage_path"]).exists():
+        raise HTTPException(status_code=404, detail="Grabación no encontrada")
+
+    media_type = f"audio/{row['format']}" if row["format"] else "application/octet-stream"
+    return FileResponse(path=row["storage_path"], media_type=media_type)
 
 
 def _agent_id(conn) -> str:
@@ -557,7 +586,7 @@ def call_detail(request: Request, call_id: str):
             {"call_id": call_id},
         ).mappings().one_or_none()
 
-    audio_url = f"/audio/{audio_url_path(call['storage_path'])}" if call["storage_path"] else None
+    audio_url = f"/audio/{call['id']}" if call["storage_path"] else None
     phone_display = _format_phone(call["phone_number"])
 
     return templates.TemplateResponse(
@@ -966,8 +995,10 @@ def reports_campanas(request: Request):
 def _zip_recordings_response(matching: list[dict], zip_stem: str) -> Response:
     """Arma un .zip en disco (no en memoria, para no repetir el problema de
     espacio que ya tuvimos) con las grabaciones de `matching` (cada dict
-    necesita audio_filename/original_filename/call_id) y lo manda como
-    descarga; se borra despues (BackgroundTask)."""
+    necesita storage_path/original_filename/call_id) y lo manda como
+    descarga; se borra despues (BackgroundTask). Lee cada archivo por su
+    storage_path guardado tal cual -- no reconstruye la ruta a partir de
+    RECORDINGS_DIR, para no depender de como este montado el disco."""
     tmp_dir = RECORDINGS_DIR.parent / "_tmp_zips"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = tmp_dir / f"{uuid.uuid4().hex}.zip"
@@ -975,10 +1006,10 @@ def _zip_recordings_response(matching: list[dict], zip_stem: str) -> Response:
     seen_names: set[str] = set()
     with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as zf:
         for call in matching:
-            source = RECORDINGS_DIR / call["audio_filename"]
+            source = Path(call["storage_path"])
             if not source.exists():
                 continue
-            arcname = call["original_filename"] or call["audio_filename"]
+            arcname = call["original_filename"] or source.name
             if arcname in seen_names:
                 arcname = f"{call['call_id'][:8]}_{arcname}"
             seen_names.add(arcname)
@@ -1009,7 +1040,7 @@ def download_mentioned_agent_recordings(request: Request, name: str):
     with tenant_connection() as (conn, _tenant_id):
         data = build_campaign_report(conn)
 
-    matching = [c for c in data["calls"] if name in c["agent_names_mentioned"] and c["audio_filename"]]
+    matching = [c for c in data["calls"] if name in c["agent_names_mentioned"] and c["storage_path"]]
     if not matching:
         return RedirectResponse(url="/reports/campanas", status_code=303)
 
@@ -1027,7 +1058,7 @@ def download_campaign_recordings(request: Request, bucket: str):
     with tenant_connection() as (conn, _tenant_id):
         data = build_campaign_report(conn)
 
-    matching = [c for c in data["calls"] if c["bucket"] == bucket and c["audio_filename"]]
+    matching = [c for c in data["calls"] if c["bucket"] == bucket and c["storage_path"]]
     if not matching:
         return RedirectResponse(url="/reports/campanas", status_code=303)
 
