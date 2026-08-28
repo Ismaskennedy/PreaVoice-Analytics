@@ -5,8 +5,14 @@ a millones de archivos, como el disco completo).
 A esta escala NO copia los archivos a otro lado -- ya viven en el disco
 montado, y copiarlos duplicaria cientos de GB y tardaria muchisimo. En vez
 de eso, cada llamada queda apuntando directo a donde ya esta el archivo
-(storage_path = la ruta real dentro de la carpeta que le diste). Cada
-archivo se lee una sola vez, para calcular su checksum.
+(storage_path = la ruta real dentro de la carpeta que le diste).
+
+Se salta (no se sube) cualquier archivo mas corto que --min-seconds (40s
+por default): esas grabaciones casi siempre son "no contesto"/timbrado sin
+respuesta, sin conversacion real que valga la pena transcribir despues.
+Cada archivo que si pasa el filtro se lee una sola vez, para calcular su
+checksum -- la duracion se saca con ffprobe (rapido, no decodifica el
+audio completo).
 
 Mismo gestor y mismo cliente para todo el lote, igual que import_zip.py.
 Telefono/fecha se intentan sacar del nombre del archivo (si no hace match,
@@ -30,10 +36,13 @@ nohup, para que no se corte si se cae la sesion de SSH. Ejemplo:
 """
 import argparse
 import hashlib
+import shutil
+import subprocess
 import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -45,6 +54,13 @@ from webapp.main import ALLOWED_AUDIO_EXT, _normalize_phone, _parse_occurred_at
 
 CHUNK_SIZE = 1000
 DEFAULT_WORKERS = 8
+DEFAULT_MIN_SECONDS = 40
+
+# Ruta conocida de la instalacion portable de ffmpeg/ffprobe en Windows; en
+# Linux (con ffmpeg instalado por apt) shutil.which("ffprobe") ya lo
+# encuentra solo.
+_KNOWN_FFPROBE = Path.home() / "ffmpeg" / "ffmpeg-9.0.1-essentials_build" / "bin" / "ffprobe.exe"
+FFPROBE_PATH = str(_KNOWN_FFPROBE) if _KNOWN_FFPROBE.exists() else (shutil.which("ffprobe") or "ffprobe")
 
 
 def _discover_files(root: Path, limit: int | None):
@@ -57,11 +73,29 @@ def _discover_files(root: Path, limit: int | None):
                 return
 
 
-def _read_one(source: Path):
+def _get_duration_seconds(path: Path) -> float | None:
     try:
-        return source, source.read_bytes(), None
+        result = subprocess.run(
+            [FFPROBE_PATH, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return float(result.stdout.strip())
+    except Exception:  # noqa: BLE001 - si no se puede medir, mejor no descartarla de entrada
+        return None
+
+
+def _read_one(source: Path, min_seconds: float):
+    """Regresa (source, data, error, too_short). Se salta el archivo (data
+    y error en None, too_short=True) si dura menos de min_seconds."""
+    duration = _get_duration_seconds(source)
+    if duration is not None and duration < min_seconds:
+        return source, None, None, True
+    try:
+        return source, source.read_bytes(), None, False
     except Exception as exc:  # noqa: BLE001 - un archivo malo no debe tumbar el resto del lote
-        return source, None, str(exc)
+        return source, None, str(exc), False
 
 
 def main() -> None:
@@ -71,11 +105,19 @@ def main() -> None:
     parser.add_argument("--client-name", required=True, help="name exacto del cliente/cartera (todo el lote)")
     parser.add_argument("--limit", type=int, default=None, help="importar solo las primeras N (para probar)")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="lecturas de archivo en paralelo")
+    parser.add_argument(
+        "--min-seconds", type=float, default=DEFAULT_MIN_SECONDS,
+        help="se saltan (no se suben) los archivos mas cortos que esto",
+    )
     args = parser.parse_args()
 
     root = Path(args.folder)
     if not root.is_dir():
         print(f"No existe la carpeta: {root}")
+        raise SystemExit(1)
+
+    if FFPROBE_PATH == "ffprobe" and shutil.which("ffprobe") is None:
+        print("No se encontro ffprobe (viene con ffmpeg). Instalalo para poder filtrar por duracion.")
         raise SystemExit(1)
 
     with tenant_connection() as (conn, _tenant_id):
@@ -96,13 +138,15 @@ def main() -> None:
     files = list(_discover_files(root, args.limit))
     total = len(files)
     print(
-        f"{total} archivos encontrados. Importando "
-        f"(gestor={args.agent_name}, cliente={args.client_name}, {args.workers} lecturas en paralelo)..."
+        f"{total} archivos encontrados. Importando (se saltan los menores a {args.min_seconds}s) "
+        f"(gestor={args.agent_name}, cliente={args.client_name}, {args.workers} en paralelo)..."
     )
 
     loaded = 0
+    too_short = 0
     failed: list[str] = []
     start = time.time()
+    read_one = partial(_read_one, min_seconds=args.min_seconds)
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for chunk_start in range(0, total, CHUNK_SIZE):
@@ -110,7 +154,10 @@ def main() -> None:
             call_rows = []
             recording_rows = []
 
-            for source, data, error in pool.map(_read_one, chunk):
+            for source, data, error, is_short in pool.map(read_one, chunk):
+                if is_short:
+                    too_short += 1
+                    continue
                 if error is not None:
                     failed.append(f"{source.name}: {error}")
                     continue
@@ -162,10 +209,13 @@ def main() -> None:
 
             done = min(chunk_start + CHUNK_SIZE, total)
             elapsed = time.time() - start
-            rate = loaded / elapsed if elapsed > 0 else 0
-            print(f"  {done}/{total} ({loaded} cargados) -- {elapsed:.0f}s transcurridos, ~{rate:.1f}/s")
+            rate = (loaded + too_short) / elapsed if elapsed > 0 else 0
+            print(
+                f"  {done}/{total} ({loaded} cargados, {too_short} muy cortos, omitidos) "
+                f"-- {elapsed:.0f}s transcurridos, ~{rate:.1f}/s"
+            )
 
-    print(f"\nListo: {loaded}/{total} cargadas. {len(failed)} fallaron.")
+    print(f"\nListo: {loaded}/{total} cargadas. {too_short} omitidas por muy cortas. {len(failed)} fallaron.")
     if failed:
         print("Primeros errores:")
         for line in failed[:10]:

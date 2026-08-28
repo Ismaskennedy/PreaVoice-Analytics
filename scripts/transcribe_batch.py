@@ -1,21 +1,26 @@
-"""Transcribe en lote las llamadas que todavia no tienen transcripcion,
-recortando cada audio a los primeros N segundos antes de mandarlo a Whisper.
+"""Transcribe en lote las llamadas que todavia no tienen transcripcion, en
+dos pasos para no gastar de mas en buzones de voz / llamadas vacias:
 
-Pensado para el reporte de campañas (webapp/services/reports.py): ese
-reporte solo necesita saber si al inicio de la llamada se menciona SPIN,
-Bradescard o Banco Azteca -- no hace falta transcribir la llamada completa
-para eso. Recortar el audio antes de subirlo a Whisper baja el costo y el
-tiempo de forma proporcional (Whisper cobra por minuto de audio que le
-mandas, no por llamada).
+1. Sondeo corto (PROBE_SECONDS, 20s por default) al inicio de la llamada.
+2. Si el sondeo se parece a buzon de voz o no tiene suficiente conversacion
+   real (misma logica exacta que ya usa el reporte de campañas para marcar
+   "llamada vacia" -- webapp/services/reports.py), se deja ahi: esa
+   transcripcion corta ya es suficiente, no tiene caso pagar por mas.
+3. Si el sondeo SI parece conversacion real, se transcribe hasta
+   MAX_SECONDS (3.5 min por default) -- mas que el sondeo para no perder
+   una mencion tardia de palabra clave, pero con tope para no pagar
+   llamadas larguisimas completas.
+
+No borra ni excluye las llamadas vacias del sistema (siguen apareciendo en
+el reporte, marcadas como tal) -- solo evita pagarles una transcripcion
+larga que no va a aportar nada.
 
 No corre ningun analisis con GPT-4o-mini (checklist/emociones/coaching) --
-solo transcripcion. Las llamadas quedan en status 'transcribed', listas
-para el reporte de campañas; si mas adelante se quieren analizar de verdad,
-eso es un paso aparte (necesitarian la llamada completa, no el recorte).
+solo transcripcion.
 
 Uso:
     .venv/Scripts/python.exe scripts/transcribe_batch.py
-    .venv/Scripts/python.exe scripts/transcribe_batch.py --seconds 20 --workers 25
+    .venv/Scripts/python.exe scripts/transcribe_batch.py --probe-seconds 15 --max-seconds 180 --workers 25
     .venv/Scripts/python.exe scripts/transcribe_batch.py --limit 20   # prueba chica primero
 """
 import argparse
@@ -34,14 +39,16 @@ from sqlalchemy import text
 
 from webapp.db import tenant_connection
 from webapp.openai_client import get_openai_client
+from webapp.services.reports import _is_empty_call, _normalize
 from webapp.services.transcription import transcribe
 
-DEFAULT_SECONDS = 30
+DEFAULT_PROBE_SECONDS = 20
+DEFAULT_MAX_SECONDS = 210  # 3.5 minutos
 DEFAULT_WORKERS = 20
 MAX_RETRIES = 3
 
-# Ruta conocida de la instalacion portable de ffmpeg en esta maquina; si no
-# existe, se usa "ffmpeg" del PATH (por si algun dia se instala de verdad).
+# Ruta conocida de la instalacion portable de ffmpeg en Windows; en Linux
+# (con ffmpeg instalado por apt) shutil.which("ffmpeg") ya lo encuentra solo.
 _KNOWN_FFMPEG = Path.home() / "ffmpeg" / "ffmpeg-9.0.1-essentials_build" / "bin" / "ffmpeg.exe"
 FFMPEG_PATH = str(_KNOWN_FFMPEG) if _KNOWN_FFMPEG.exists() else (shutil.which("ffmpeg") or "ffmpeg")
 
@@ -102,7 +109,21 @@ def _mark_failed(call_id: str, error: str) -> None:
         print(f"  [FALLO] {call_id}: {error}")
 
 
-def _process_one(openai_client, call: dict, seconds: int) -> bool:
+def _transcribe_with_retries(openai_client, path: Path):
+    """Intenta transcribir hasta MAX_RETRIES veces. Regresa (segments, None)
+    o (None, error) -- nunca lanza, para que el llamador decida que hacer."""
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            segments, _raw = transcribe(openai_client, path)
+            return segments, None
+        except Exception as exc:  # noqa: BLE001 - un intento fallido no debe tumbar el lote
+            last_error = exc
+            time.sleep(2 ** attempt)
+    return None, last_error
+
+
+def _process_one(openai_client, call: dict, probe_seconds: int, max_seconds: int) -> bool:
     call_id = call["call_id"]
     source_path = Path(call["storage_path"])
     if not source_path.exists():
@@ -110,30 +131,55 @@ def _process_one(openai_client, call: dict, seconds: int) -> bool:
         return False
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        trimmed_path = Path(tmp_dir) / f"clip{source_path.suffix}"
+        probe_path = Path(tmp_dir) / f"probe{source_path.suffix}"
         try:
-            _trim_audio(source_path, seconds, trimmed_path)
+            _trim_audio(source_path, probe_seconds, probe_path)
         except subprocess.CalledProcessError as exc:
             _mark_failed(call_id, f"ffmpeg fallo: {exc.stderr[:200] if exc.stderr else exc}")
             return False
 
-        last_error = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                segments, _raw = transcribe(openai_client, trimmed_path)
-                _save_transcript(str(call_id), segments)
-                return True
-            except Exception as exc:  # noqa: BLE001 - una llamada mala no debe tumbar el lote
-                last_error = exc
-                time.sleep(2 ** attempt)
+        probe_segments, error = _transcribe_with_retries(openai_client, probe_path)
+        if probe_segments is None:
+            _mark_failed(call_id, str(error))
+            return False
 
-        _mark_failed(call_id, str(last_error))
+        probe_text = " ".join(seg["text"] for seg in probe_segments)
+        if _is_empty_call(_normalize(probe_text)):
+            # Buzon de voz / sin conversacion real: el sondeo ya alcanza.
+            # No se borra ni se excluye -- sigue viva, solo no se paga mas.
+            _save_transcript(str(call_id), probe_segments)
+            return True
+
+        # Conversacion real: se transcribe hasta max_seconds -- mas que el
+        # sondeo para no perder una mencion tardia, pero con tope para no
+        # pagar llamadas larguisimas completas.
+        capped_path = Path(tmp_dir) / f"capped{source_path.suffix}"
+        try:
+            _trim_audio(source_path, max_seconds, capped_path)
+        except subprocess.CalledProcessError as exc:
+            _mark_failed(call_id, f"ffmpeg fallo (tope): {exc.stderr[:200] if exc.stderr else exc}")
+            return False
+
+        full_segments, error = _transcribe_with_retries(openai_client, capped_path)
+
+    if full_segments is None:
+        _mark_failed(call_id, str(error))
         return False
+
+    _save_transcript(str(call_id), full_segments)
+    return True
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seconds", type=int, default=DEFAULT_SECONDS, help="segundos a transcribir desde el inicio")
+    parser.add_argument(
+        "--probe-seconds", type=int, default=DEFAULT_PROBE_SECONDS,
+        help="segundos del sondeo inicial para detectar buzon de voz",
+    )
+    parser.add_argument(
+        "--max-seconds", type=int, default=DEFAULT_MAX_SECONDS,
+        help="tope de segundos a transcribir cuando la llamada SI parece real (210 = 3.5 min)",
+    )
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="llamadas a Whisper en paralelo")
     parser.add_argument("--limit", type=int, default=None, help="procesar solo las primeras N (para probar)")
     args = parser.parse_args()
@@ -148,14 +194,20 @@ def main() -> None:
         print("No hay llamadas pendientes de transcribir.")
         return
 
-    print(f"Transcribiendo {total} llamadas (primeros {args.seconds}s cada una, {args.workers} en paralelo)...")
+    print(
+        f"Transcribiendo {total} llamadas (sondeo de {args.probe_seconds}s, hasta {args.max_seconds}s si no es "
+        f"vacia, {args.workers} en paralelo)..."
+    )
     openai_client = get_openai_client()
 
     done = 0
     ok = 0
     start = time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(_process_one, openai_client, call, args.seconds): call for call in calls}
+        futures = {
+            pool.submit(_process_one, openai_client, call, args.probe_seconds, args.max_seconds): call
+            for call in calls
+        }
         for future in as_completed(futures):
             done += 1
             if future.result():
