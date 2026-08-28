@@ -63,10 +63,23 @@ _KNOWN_FFPROBE = Path.home() / "ffmpeg" / "ffmpeg-9.0.1-essentials_build" / "bin
 FFPROBE_PATH = str(_KNOWN_FFPROBE) if _KNOWN_FFPROBE.exists() else (shutil.which("ffprobe") or "ffprobe")
 
 
-def _discover_files(root: Path, limit: int | None):
+def _already_imported_paths() -> set[str]:
+    """Todos los storage_path que ya existen en la base (de cualquier
+    tenant/gestor/cliente) -- para no volver a importar el mismo archivo
+    dos veces si el script se corre otra vez sobre la misma carpeta."""
+    with tenant_connection() as (conn, _tenant_id):
+        rows = conn.execute(
+            text("SELECT storage_path FROM app.recordings WHERE storage_path IS NOT NULL")
+        ).scalars().all()
+    return {str(Path(p).resolve()) for p in rows}
+
+
+def _discover_files(root: Path, limit: int | None, already_imported: set[str]):
     found = 0
     for path in root.rglob("*"):
         if path.is_file() and path.suffix.lower() in ALLOWED_AUDIO_EXT:
+            if str(path.resolve()) in already_imported:
+                continue
             yield path
             found += 1
             if limit and found >= limit:
@@ -134,11 +147,15 @@ def main() -> None:
         print(f"No se encontro ningun cliente con name = {args.client_name!r}")
         raise SystemExit(1)
 
+    print("Revisando cuales ya estan cargados de una corrida anterior...")
+    already_imported = _already_imported_paths()
+    print(f"{len(already_imported)} ya estaban en el sistema, se van a saltar.")
+
     print("Buscando archivos de audio (puede tardar varios minutos en un disco de millones)...")
-    files = list(_discover_files(root, args.limit))
+    files = list(_discover_files(root, args.limit, already_imported))
     total = len(files)
     print(
-        f"{total} archivos encontrados. Importando (se saltan los menores a {args.min_seconds}s) "
+        f"{total} archivos nuevos encontrados. Importando (se saltan los menores a {args.min_seconds}s) "
         f"(gestor={args.agent_name}, cliente={args.client_name}, {args.workers} en paralelo)..."
     )
 
