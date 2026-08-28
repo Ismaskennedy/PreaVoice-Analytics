@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Carga de CSV — PREA Voice Analytics{% endblock %}
+{% block content %}
+    <a class="volver" href="/calls">&larr; Volver a llamadas</a>
+    <h1>Resultado de la carga</h1>
+
+    <div class="tarjeta">
+        <p><strong>{{ loaded }}</strong> llamada{{ "s" if loaded != 1 else "" }} cargada{{ "s" if loaded != 1 else "" }} correctamente (audio descargado y guardado, sin transcribir/analizar todavía).</p>
+        <p>{{ skipped_blank }} fila{{ "s" if skipped_blank != 1 else "" }} vacía{{ "s" if skipped_blank != 1 else "" }} ignorada{{ "s" if skipped_blank != 1 else "" }}.</p>
+        <p>{{ skipped_no_location }} fila{{ "s" if skipped_no_location != 1 else "" }} sin URL de grabación, ignorada{{ "s" if skipped_no_location != 1 else "" }}.</p>
+    </div>
+
+    {% if unknown_agents %}
+    <div class="tarjeta">
+        <h3>Gestores no encontrados ({{ unknown_agents | length }} código{{ "s" if (unknown_agents | length) != 1 else "" }})</h3>
+        <p>Estas filas no se cargaron porque su código no coincide con ningún <code>external_code</code> registrado:</p>
+        <ul>
+            {% for code, count in unknown_agents.items() %}
+            <li><strong>{{ code or "(vacío)" }}</strong> — {{ count }} llamada{{ "s" if count != 1 else "" }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% if failed_downloads %}
+    <div class="tarjeta">
+        <h3>Grabaciones que no se pudieron descargar ({{ failed_downloads | length }})</h3>
+        <ul>
+            {% for item in failed_downloads %}
+            <li>{{ item }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+{% endblock %}

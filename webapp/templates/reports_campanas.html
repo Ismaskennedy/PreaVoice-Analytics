@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Reporte de campañas — PREA Voice Analytics{% endblock %}
+{% block content %}
+    <a class="volver" href="/reports">&larr; Volver a reportes</a>
+    <h1>Reporte de campañas</h1>
+    <p class="vacio">
+        A qué campaña pertenece cada llamada según lo que se <strong>menciona en la transcripción</strong>
+        (no según el cliente al que se subió) — útil para medir campañas y detectar cruces.
+    </p>
+
+    {% if data.total_without_transcript > 0 %}
+    <div class="caja">
+        <strong>{{ data.total_with_transcript }}</strong> de <strong>{{ data.total_calls }}</strong> llamadas
+        ya están transcritas y aparecen abajo. Las otras
+        <strong>{{ data.total_without_transcript }}</strong> todavía no se han transcrito, así que no se pueden
+        buscar sus palabras todavía.
+    </div>
+    {% endif %}
+
+    {% if data.calls %}
+    <div class="metricas">
+        {% for name in data.campaign_names %}
+        <div class="metrica">
+            <div class="numero">{{ data.counts[name] }}</div>
+            <div class="etiqueta">{{ name }}</div>
+            {% if data.counts[name] %}
+            <a class="btn" style="margin-top:0.6rem; display:inline-block; padding: 0.35rem 0.8rem; font-size:0.8rem;"
+               href="/reports/campanas/{{ name | urlencode }}/download">⬇ Descargar todas</a>
+            {% endif %}
+        </div>
+        {% endfor %}
+        <div class="metrica">
+            <div class="numero">{{ data.counts["varias"] }}</div>
+            <div class="etiqueta">Mencionan más de una</div>
+            {% if data.counts["varias"] %}
+            <a class="btn" style="margin-top:0.6rem; display:inline-block; padding: 0.35rem 0.8rem; font-size:0.8rem;"
+               href="/reports/campanas/{{ 'varias' | urlencode }}/download">⬇ Descargar todas</a>
+            {% endif %}
+        </div>
+        <div class="metrica">
+            <div class="numero">{{ data.counts["sin detectar"] }}</div>
+            <div class="etiqueta">Sin detectar</div>
+            {% if data.counts["sin detectar"] %}
+            <a class="btn" style="margin-top:0.6rem; display:inline-block; padding: 0.35rem 0.8rem; font-size:0.8rem;"
+               href="/reports/campanas/{{ 'sin detectar' | urlencode }}/download">⬇ Descargar todas</a>
+            {% endif %}
+        </div>
+        <div class="metrica">
+            <div class="numero">{{ data.counts["vacía"] }}</div>
+            <div class="etiqueta">Llamadas vacías</div>
+            {% if data.counts["vacía"] %}
+            <a class="btn" style="margin-top:0.6rem; display:inline-block; padding: 0.35rem 0.8rem; font-size:0.8rem;"
+               href="/reports/campanas/{{ 'vacía' | urlencode }}/download">⬇ Descargar todas</a>
+            {% endif %}
+        </div>
+    </div>
+    <p class="vacio" style="margin-top:0.5rem;">
+        "Llamadas vacías" = buzón de voz, no contestó, o muy cortas para tener conversación real — nunca van a
+        mencionar una campaña, así que se separan de "sin detectar" (esas sí tuvieron conversación, solo que no
+        mencionaron ninguna campaña).
+    </p>
+
+    {% if data.mentioned_agent_names %}
+    <div class="tarjeta" style="margin-top:1.5rem;">
+        <h3 style="margin-top:0;">Descargar por gestor detectado</h3>
+        <p class="vacio" style="margin-top:-0.4rem;">
+            Gestores que se presentaron por su nombre durante la llamada — útil cuando el gestor asignado en el
+            sistema no es el real (como en el lote recuperado).
+        </p>
+        <form action="/reports/campanas/gestor-detectado/download" method="get"
+              style="display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap;">
+            <select name="name" required>
+                {% for name in data.mentioned_agent_names %}
+                <option value="{{ name }}">{{ name }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit">⬇ Descargar todas sus grabaciones</button>
+        </form>
+    </div>
+    {% endif %}
+
+    <table style="width:100%; border-collapse: collapse; margin-top: 1.5rem;">
+        <thead>
+            <tr style="text-align:left; border-bottom: 1px solid var(--borde);">
+                <th style="padding: 0.5rem 0.6rem;">Fecha</th>
+                <th style="padding: 0.5rem 0.6rem;">Teléfono</th>
+                <th style="padding: 0.5rem 0.6rem;">Archivo</th>
+                <th style="padding: 0.5rem 0.6rem;">Gestor asignado</th>
+                <th style="padding: 0.5rem 0.6rem;">Gestor mencionado</th>
+                <th style="padding: 0.5rem 0.6rem;">Cartera asignada</th>
+                <th style="padding: 0.5rem 0.6rem;">Campaña detectada</th>
+                <th style="padding: 0.5rem 0.6rem;">Fecha mencionada</th>
+                <th style="padding: 0.5rem 0.6rem;">Grabación</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for call in data.calls %}
+            <tr style="border-bottom: 1px solid var(--borde);">
+                <td style="padding: 0.5rem 0.6rem; white-space: nowrap;">{{ call.when.strftime("%d/%m/%Y %H:%M") }}</td>
+                <td style="padding: 0.5rem 0.6rem;"><a href="/calls/{{ call.call_id }}">{{ call.phone_display }}</a></td>
+                <td style="padding: 0.5rem 0.6rem; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ call.original_filename or '' }}">{{ call.original_filename or "—" }}</td>
+                <td style="padding: 0.5rem 0.6rem;">{{ call.agent_name }}</td>
+                <td style="padding: 0.5rem 0.6rem;">
+                    {% if call.agent_names_mentioned %}
+                        {{ call.agent_names_mentioned | join(", ") }}
+                    {% else %}
+                        <span class="vacio">—</span>
+                    {% endif %}
+                </td>
+                <td style="padding: 0.5rem 0.6rem;">{{ call.assigned_client }}</td>
+                <td style="padding: 0.5rem 0.6rem;">
+                    {% if call.mismatch %}
+                        <span class="badge badge-riesgo">{{ call.detected_label }}</span>
+                    {% elif call.detected %}
+                        <span class="badge badge-cumplido">{{ call.detected_label }}</span>
+                    {% elif call.bucket == "vacía" %}
+                        <span class="badge badge-sin-evidencia">llamada vacía</span>
+                    {% else %}
+                        <span class="badge badge-sin-evidencia">sin detectar</span>
+                    {% endif %}
+                </td>
+                <td style="padding: 0.5rem 0.6rem;">
+                    {% if call.dates_mentioned %}
+                        {{ call.dates_mentioned | join(", ") }}
+                    {% else %}
+                        <span class="vacio">—</span>
+                    {% endif %}
+                </td>
+                <td style="padding: 0.5rem 0.6rem;">
+                    {% if call.audio_filename %}
+                        <a href="/audio/{{ call.audio_filename }}" download>⬇ Descargar</a>
+                    {% else %}
+                        <span class="vacio">sin archivo</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+        <p class="vacio">Todavía no hay ninguna llamada transcrita para analizar.</p>
+    {% endif %}
+{% endblock %}

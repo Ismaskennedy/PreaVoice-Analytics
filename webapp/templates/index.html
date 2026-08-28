@@ -4,14 +4,20 @@
 <style>
     .whatsapp { display: flex; height: calc(100vh - 61px); border-top: 1px solid var(--borde); }
     .lista-agentes { width: 300px; flex-shrink: 0; border-right: 1px solid var(--borde); overflow-y: auto; background: var(--fondo-elevado); }
+    .agente-fila { display: flex; align-items: stretch; border-bottom: 1px solid var(--borde); }
     .agente-item {
         display: flex; align-items: center; gap: 0.7rem; padding: 0.85rem 1.1rem;
-        text-decoration: none; color: var(--texto); border-bottom: 1px solid var(--borde);
+        text-decoration: none; color: var(--texto); flex: 1; min-width: 0;
     }
     .agente-item:hover { background: var(--tarjeta-hover); }
     .agente-item.activo { background: var(--azul-tint); border-left: 3px solid var(--azul); }
     .agente-item .nombre { font-weight: 600; font-size: 0.92rem; }
     .agente-item .conteo { color: var(--texto-suave); font-size: 0.8rem; }
+    .descarga-gestor {
+        display: flex; align-items: center; justify-content: center; width: 2.4rem; flex-shrink: 0;
+        color: var(--texto-suave); text-decoration: none; font-size: 1rem;
+    }
+    .descarga-gestor:hover { background: var(--tarjeta-hover); color: var(--azul); }
     .panel-derecho { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
     .filtros { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1.25rem; }
     .filtros select { width: auto; margin: 0; }
@@ -31,31 +37,62 @@
 <div class="whatsapp">
     <div class="lista-agentes">
         {% for agent in agents %}
-        <a class="agente-item {{ 'activo' if (agent.id | string) == selected_agent_id else '' }}"
-           href="/calls?agent_id={{ agent.id }}">
-            <span class="avatar">{{ agent.initials }}</span>
-            <span>
-                <div class="nombre">{{ agent.full_name }}</div>
-                <div class="conteo">{{ agent.call_count }} llamada{{ "s" if agent.call_count != 1 else "" }}</div>
-            </span>
-        </a>
+        <div class="agente-fila">
+            <a class="agente-item {{ 'activo' if (agent.id | string) == selected_agent_id else '' }}"
+               href="/calls?agent_id={{ agent.id }}">
+                <span class="avatar">{{ agent.initials }}</span>
+                <span>
+                    <div class="nombre">{{ agent.full_name }}</div>
+                    <div class="conteo">{{ agent.call_count }} llamada{{ "s" if agent.call_count != 1 else "" }}</div>
+                </span>
+            </a>
+            {% if user.role in ("calidad", "admin") and agent.call_count %}
+            <a class="descarga-gestor" href="/calls/download-by-agent/{{ agent.id }}"
+               title="Descargar todas las grabaciones de {{ agent.full_name }}">⬇</a>
+            {% endif %}
+        </div>
         {% else %}
         <p class="vacio" style="padding: 1rem;">No hay gestores todavía.</p>
         {% endfor %}
     </div>
 
     <div class="panel-derecho">
+        {% if user.role == "admin" %}
         <details class="colapsable">
-            <summary>+ Subir grabación</summary>
-            <form action="/calls/upload" method="post" enctype="multipart/form-data">
-                <label for="file">Archivo de audio</label>
+            <summary>+ Cargar grabaciones</summary>
+            <form action="/calls/upload" method="post" enctype="multipart/form-data" style="margin-bottom: 1rem;">
+                <label for="file">Archivo individual</label>
                 <input type="file" id="file" name="file" required>
                 <button type="submit">Subir (transcribe y analiza al momento)</button>
             </form>
+            <form action="/calls/upload-csv" method="post" enctype="multipart/form-data" style="margin-bottom: 1rem;">
+                <label for="csv_file">CSV (carga masiva — columnas: start_time, user, location, phone_number)</label>
+                <input type="file" id="csv_file" name="file" accept=".csv" required>
+                <button type="submit">Cargar (descarga los audios, sin transcribir/analizar todavía)</button>
+            </form>
+            <form action="/calls/upload-zip" method="post" enctype="multipart/form-data">
+                <label for="zip_file">ZIP (carga masiva — archivos de audio sueltos, un mismo gestor y cliente para todo el lote)</label>
+                <input type="file" id="zip_file" name="file" accept=".zip" required>
+                <label for="zip_agent">Gestor</label>
+                <select id="zip_agent" name="agent_id" required>
+                    {% for agent in agents %}
+                    <option value="{{ agent.id }}">{{ agent.full_name }}</option>
+                    {% endfor %}
+                </select>
+                <label for="zip_client">Cliente</label>
+                <select id="zip_client" name="client_id" required>
+                    {% for c in clients %}
+                    <option value="{{ c.id }}">{{ c.name }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit">Cargar (sin transcribir/analizar todavía)</button>
+            </form>
         </details>
+        {% endif %}
 
         <form class="filtros" action="/calls" method="get">
             <input type="hidden" name="agent_id" value="{{ selected_agent_id or '' }}">
+            <input type="text" name="phone" placeholder="Buscar por teléfono..." value="{{ phone or '' }}" style="width: 200px;">
             <select name="status" onchange="this.form.submit()">
                 <option value="" {{ "selected" if not status }}>Todos los estados</option>
                 {% for s in call_statuses %}
@@ -66,29 +103,37 @@
                 <input type="checkbox" name="solo_riesgo" value="true" {{ "checked" if solo_riesgo }} onchange="this.form.submit()">
                 Solo riesgo legal
             </label>
+            <button type="submit" class="secundario">Buscar</button>
+            {% if phone %}<a href="/calls">Limpiar búsqueda</a>{% endif %}
         </form>
 
-        {% if not selected_agent_id %}
+        {% if phone %}
+            {% if calls %}
+                <p class="vacio">{{ calls | length }} llamada{{ "s" if (calls | length) != 1 else "" }} encontrada{{ "s" if (calls | length) != 1 else "" }} para "{{ phone }}", en todos los gestores.</p>
+            {% else %}
+                <p class="vacio">Ninguna llamada coincide con ese teléfono.</p>
+            {% endif %}
+        {% elif not selected_agent_id %}
             <p class="vacio">Selecciona un gestor a la izquierda para ver sus llamadas.</p>
-        {% elif calls %}
-            {% for call in calls %}
-            <a class="llamada-card" href="/calls/{{ call.id }}">
-                <span>
-                    <div class="archivo">{{ call.original_filename or "Sin archivo" }}</div>
-                    <div class="fecha">{{ call.uploaded_at.strftime("%d/%m/%Y %H:%M") }}</div>
-                </span>
-                <span class="derecha">
-                    {% if call.has_legal_risk %}<span class="badge badge-riesgo">riesgo legal</span>{% endif %}
-                    {% if call.score is not none %}
-                        <span class="badge badge-cumplido">{{ call.score }}%</span>
-                    {% endif %}
-                    <span class="badge badge-sin-evidencia">{{ call.status }}</span>
-                </span>
-            </a>
-            {% endfor %}
-        {% else %}
+        {% elif not calls %}
             <p class="vacio">Este gestor todavía no tiene llamadas con estos filtros.</p>
         {% endif %}
+
+        {% for call in calls %}
+        <a class="llamada-card" href="/calls/{{ call.id }}">
+            <span>
+                <div class="archivo">{{ call.phone_display }}{% if phone %} — {{ call.agent_name }}{% endif %}</div>
+                <div class="fecha">{{ call.uploaded_at.strftime("%d/%m/%Y %H:%M") }}</div>
+            </span>
+            <span class="derecha">
+                {% if call.has_legal_risk %}<span class="badge badge-riesgo">riesgo legal</span>{% endif %}
+                {% if call.score is not none %}
+                    <span class="badge badge-cumplido">{{ call.score }}%</span>
+                {% endif %}
+                <span class="badge badge-sin-evidencia">{{ call.status }}</span>
+            </span>
+        </a>
+        {% endfor %}
     </div>
 </div>
 {% endblock %}

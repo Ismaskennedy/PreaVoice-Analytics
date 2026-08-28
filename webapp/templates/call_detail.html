@@ -2,7 +2,7 @@
 {% block title %}Llamada — PREA Voice Analytics{% endblock %}
 {% block content %}
     <a class="volver" href="/calls">&larr; Volver al listado</a>
-    <h1>{{ call.original_filename or "Llamada" }}</h1>
+    <h1>{{ phone_display }}</h1>
     <p>
         <strong>Cliente:</strong> {{ call.client_name }} &middot;
         <strong>Gestor:</strong> {{ call.agent_name }} &middot;

@@ -1,16 +1,22 @@
+import csv
 import hashlib
+import io
 import re
 import unicodedata
 import uuid
+import zipfile
 from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import urlparse
 
+import requests
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
+from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 from xhtml2pdf import pisa
 
@@ -25,11 +31,11 @@ from webapp.auth import (
     require_role,
     verify_password,
 )
-from webapp.config import RECORDINGS_DIR, SECRET_KEY
+from webapp.config import RECORDINGS_DIR, SECRET_KEY, audio_url_path, sharded_recording_path
 from webapp.db import tenant_connection
 from webapp.openai_client import get_openai_client
 from webapp.services.analysis import analyze, compute_score
-from webapp.services.reports import build_pulso_diario
+from webapp.services.reports import build_campaign_report, build_pulso_diario
 from webapp.services.transcription import assess_audio_quality, transcribe
 
 app = FastAPI(title="PREA Voice Analytics")
@@ -40,12 +46,17 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
 def _agent_id(conn) -> str:
+    """Usado cuando quien sube el archivo no es un agente (ahora siempre es
+    el caso: /calls/upload es solo-admin). Sin selector de agente en
+    pantalla todavia (pendiente real, ver CLAUDE.md), asi que se elige uno
+    de forma determinista (ORDER BY) -- antes no lo era, y con mas de un
+    agente en la base Postgres podia devolver cualquiera en cada corrida."""
     return conn.execute(
         text(
             "SELECT u.id FROM app.users u "
             "JOIN app.user_roles ur ON ur.user_id = u.id "
             "JOIN app.roles r ON r.id = ur.role_id "
-            "WHERE r.code = 'agente' LIMIT 1"
+            "WHERE r.code = 'agente' ORDER BY u.full_name LIMIT 1"
         )
     ).scalar_one()
 
@@ -291,11 +302,23 @@ def dashboard(request: Request):
 
 # --- llamadas ---
 
+def _format_phone(phone: str | None) -> str:
+    if not phone:
+        return "Sin teléfono"
+    if len(phone) == 10:
+        return f"{phone[:3]}-{phone[3:6]}-{phone[6:]}"
+    return phone
+
+
 @app.get("/calls")
-def list_calls(request: Request, agent_id: str | None = None, status: str = "", solo_riesgo: bool = False):
+def list_calls(
+    request: Request, agent_id: str | None = None, status: str = "", solo_riesgo: bool = False, phone: str = ""
+):
     user = require_login(request)
     if isinstance(user, RedirectResponse):
         return user
+
+    phone_digits = re.sub(r"\D", "", phone)
 
     with tenant_connection() as (conn, _tenant_id):
         agents = conn.execute(
@@ -315,17 +338,21 @@ def list_calls(request: Request, agent_id: str | None = None, status: str = "", 
             {**dict(a), "initials": "".join(p[0] for p in a["full_name"].split()[:2]).upper()} for a in agents
         ]
 
-        # Sin agente elegido todavia: se para en el primero de la lista,
-        # como una bandeja de WhatsApp que abre la primera conversacion.
-        selected_agent_id = agent_id or (str(agents[0]["id"]) if agents else None)
+        clients = conn.execute(
+            text("SELECT id, name FROM app.clients WHERE is_active = true ORDER BY name")
+        ).mappings().all()
 
         calls = []
-        if selected_agent_id:
+        if phone_digits:
+            # Busqueda por telefono: cruza todos los gestores, no solo el
+            # seleccionado -- la misma persona puede haber sido contactada
+            # por mas de un gestor.
+            selected_agent_id = None
             calls = conn.execute(
                 text(
                     """
                     SELECT
-                        c.id, c.uploaded_at, c.status, r.original_filename,
+                        c.id, c.uploaded_at, c.status, c.phone_number, u.full_name AS agent_name,
                         ev.score, ev.status AS evaluation_status,
                         EXISTS (
                             SELECT 1 FROM app.call_analysis_findings f
@@ -335,17 +362,46 @@ def list_calls(request: Request, agent_id: str | None = None, status: str = "", 
                             WHERE a.call_id = c.id AND f.is_met = true AND tv.is_legal_risk = true
                         ) AS has_legal_risk
                     FROM app.calls c
-                    LEFT JOIN app.recordings r ON r.call_id = c.id
+                    JOIN app.users u ON u.id = c.agent_id
                     LEFT JOIN app.call_evaluations ev ON ev.call_id = c.id AND ev.state = 'CURRENT'
-                    WHERE c.agent_id = :agent_id
+                    WHERE c.phone_number ILIKE :phone_pattern
                       AND (:status = '' OR c.status = :status)
                     ORDER BY c.uploaded_at DESC
                     """
                 ),
-                {"agent_id": selected_agent_id, "status": status},
+                {"phone_pattern": f"%{phone_digits}%", "status": status},
             ).mappings().all()
-            if solo_riesgo:
-                calls = [c for c in calls if c["has_legal_risk"]]
+        else:
+            # Sin agente elegido todavia: se para en el primero de la lista,
+            # como una bandeja de WhatsApp que abre la primera conversacion.
+            selected_agent_id = agent_id or (str(agents[0]["id"]) if agents else None)
+            if selected_agent_id:
+                calls = conn.execute(
+                    text(
+                        """
+                        SELECT
+                            c.id, c.uploaded_at, c.status, c.phone_number,
+                            ev.score, ev.status AS evaluation_status,
+                            EXISTS (
+                                SELECT 1 FROM app.call_analysis_findings f
+                                JOIN app.call_analyses a ON a.id = f.analysis_id AND a.state = 'CURRENT'
+                                JOIN app.checklist_items ci ON ci.id = f.checklist_item_id
+                                JOIN app.taxonomy_values tv ON tv.id = ci.taxonomy_value_id
+                                WHERE a.call_id = c.id AND f.is_met = true AND tv.is_legal_risk = true
+                            ) AS has_legal_risk
+                        FROM app.calls c
+                        LEFT JOIN app.call_evaluations ev ON ev.call_id = c.id AND ev.state = 'CURRENT'
+                        WHERE c.agent_id = :agent_id
+                          AND (:status = '' OR c.status = :status)
+                        ORDER BY c.uploaded_at DESC
+                        """
+                    ),
+                    {"agent_id": selected_agent_id, "status": status},
+                ).mappings().all()
+
+        if solo_riesgo:
+            calls = [c for c in calls if c["has_legal_risk"]]
+        calls = [{**dict(c), "phone_display": _format_phone(c["phone_number"])} for c in calls]
 
     return templates.TemplateResponse(
         request,
@@ -354,12 +410,69 @@ def list_calls(request: Request, agent_id: str | None = None, status: str = "", 
             "user": user,
             "ancho": True,
             "agents": agents,
+            "clients": clients,
             "selected_agent_id": selected_agent_id,
             "calls": calls,
+            "phone": phone,
             "status": status,
             "solo_riesgo": solo_riesgo,
             "call_statuses": ["uploaded", "transcribing", "transcribed", "analyzing", "analyzed", "failed"],
         },
+    )
+
+
+@app.get("/calls/download-by-agent/{agent_id}")
+def download_agent_recordings(request: Request, agent_id: str):
+    """Descarga en un .zip todas las grabaciones de un gestor -- boton junto
+    a cada quien en la lista de /calls. Igual que la descarga por campaña:
+    el .zip se arma en disco, no en memoria, y se borra despues de mandarlo."""
+    user = require_role(request, ("calidad", "admin"))
+    if isinstance(user, RedirectResponse):
+        return user
+
+    with tenant_connection() as (conn, _tenant_id):
+        agent_name = conn.execute(
+            text("SELECT full_name FROM app.users WHERE id = :id"), {"id": agent_id}
+        ).scalar_one_or_none()
+        if agent_name is None:
+            return RedirectResponse(url="/calls", status_code=303)
+
+        rows = conn.execute(
+            text(
+                "SELECT r.storage_path, r.original_filename, c.id AS call_id "
+                "FROM app.calls c JOIN app.recordings r ON r.call_id = c.id "
+                "WHERE c.agent_id = :agent_id"
+            ),
+            {"agent_id": agent_id},
+        ).mappings().all()
+
+    if not rows:
+        return RedirectResponse(url=f"/calls?agent_id={agent_id}", status_code=303)
+
+    tmp_dir = RECORDINGS_DIR.parent / "_tmp_zips"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"{uuid.uuid4().hex}.zip"
+
+    seen_names: set[str] = set()
+    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as zf:
+        for row in rows:
+            if not row["storage_path"]:
+                continue
+            source = Path(row["storage_path"])
+            if not source.exists():
+                continue
+            arcname = row["original_filename"] or source.name
+            if arcname in seen_names:
+                arcname = f"{str(row['call_id'])[:8]}_{arcname}"
+            seen_names.add(arcname)
+            zf.write(source, arcname=arcname)
+
+    safe_name = re.sub(r"[^\w\-]+", "_", agent_name.lower()).strip("_") or "gestor"
+    return FileResponse(
+        path=tmp_path,
+        filename=f"{safe_name}.zip",
+        media_type="application/zip",
+        background=BackgroundTask(lambda: tmp_path.unlink(missing_ok=True)),
     )
 
 
@@ -373,7 +486,7 @@ def call_detail(request: Request, call_id: str):
         call = conn.execute(
             text(
                 """
-                SELECT c.id, c.status, c.uploaded_at, cl.name AS client_name, u.full_name AS agent_name,
+                SELECT c.id, c.status, c.uploaded_at, c.phone_number, cl.name AS client_name, u.full_name AS agent_name,
                        r.storage_path, r.original_filename
                 FROM app.calls c
                 JOIN app.clients cl ON cl.id = c.client_id
@@ -444,13 +557,15 @@ def call_detail(request: Request, call_id: str):
             {"call_id": call_id},
         ).mappings().one_or_none()
 
-    audio_url = f"/audio/{Path(call['storage_path']).name}" if call["storage_path"] else None
+    audio_url = f"/audio/{audio_url_path(call['storage_path'])}" if call["storage_path"] else None
+    phone_display = _format_phone(call["phone_number"])
 
     return templates.TemplateResponse(
         request,
         "call_detail.html",
         {
             "user": user,
+            "phone_display": phone_display,
             "call": call,
             "audio_url": audio_url,
             "segments": segments,
@@ -492,7 +607,7 @@ def confirm_evaluation(request: Request, call_id: str):
 
 @app.post("/calls/upload")
 async def upload_call(request: Request, file: UploadFile = File(...)):
-    user = require_login(request)
+    user = require_admin(request)
     if isinstance(user, RedirectResponse):
         return user
 
@@ -514,7 +629,7 @@ async def upload_call(request: Request, file: UploadFile = File(...)):
             {"tenant_id": tenant_id, "agent_id": agent_id, "uploaded_by": user["id"]},
         ).scalar_one()
 
-        storage_path = RECORDINGS_DIR / f"{call_id}.{extension}"
+        storage_path = sharded_recording_path(call_id, extension)
         storage_path.write_bytes(contents)
 
         conn.execute(
@@ -541,6 +656,240 @@ async def upload_call(request: Request, file: UploadFile = File(...)):
         print(f"Fallo el procesamiento de la llamada {call_id}: {exc}")
 
     return RedirectResponse(url="/calls", status_code=303)
+
+
+def _parse_occurred_at(location: str, start_time_raw: str) -> datetime | None:
+    """El nombre del archivo trae fecha+hora exactas (YYYYMMDD-HHMMSS_...);
+    el CSV solo trae la fecha. Se prefiere el nombre del archivo por ser mas
+    preciso, y se cae a la fecha del CSV (a medianoche) si no hace match."""
+    match = re.search(r"(\d{8})-(\d{6})_", location)
+    if match:
+        try:
+            return datetime.strptime(match.group(1) + match.group(2), "%Y%m%d%H%M%S")
+        except ValueError:
+            pass
+    if start_time_raw:
+        try:
+            return datetime.strptime(start_time_raw.strip(), "%d/%m/%Y")
+        except ValueError:
+            pass
+    return None
+
+
+def _normalize_phone(raw: str | None, location: str) -> str | None:
+    """El telefono real son los ultimos 10 digitos (el resto es codigo de
+    pais/prefijo de la central). Si la columna phone_number del CSV viene
+    vacia, se cae al numero que trae el nombre del archivo antes de -all."""
+    candidate = (raw or "").strip()
+    if not candidate:
+        match = re.search(r"_(\d+)-all\.\w+$", location)
+        candidate = match.group(1) if match else ""
+    digits = re.sub(r"\D", "", candidate)
+    return digits[-10:] if len(digits) >= 10 else (digits or None)
+
+
+@app.post("/calls/upload-csv")
+async def upload_calls_csv(request: Request, file: UploadFile = File(...)):
+    """Carga masiva por CSV (start_time, user=external_code del gestor,
+    location=URL de descarga del .mp3, phone_number). Descarga cada
+    grabacion y crea la llamada, pero NO transcribe/analiza -- eso se
+    dispara aparte, para no gastar credito de OpenAI en una carga de
+    prueba (ver CLAUDE.md: a volumen real esto necesita un worker de
+    ops.processing_jobs, no procesar sincrono como /calls/upload)."""
+    user = require_admin(request)
+    if isinstance(user, RedirectResponse):
+        return user
+
+    raw = await file.read()
+    text_contents = raw.decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(text_contents))
+
+    loaded = 0
+    skipped_blank = 0
+    skipped_no_location = 0
+    unknown_agents: dict[str, int] = {}
+    failed_downloads: list[str] = []
+
+    for row in reader:
+        start_time_raw = (row.get("start_time") or "").strip()
+        external_code = (row.get("user") or "").strip()
+        location = (row.get("location") or "").strip()
+        phone_raw = (row.get("phone_number") or "").strip()
+
+        if not start_time_raw and not external_code and not location:
+            skipped_blank += 1
+            continue
+        if not location:
+            skipped_no_location += 1
+            continue
+
+        with tenant_connection() as (conn, _tenant_id):
+            agent_id = conn.execute(
+                text("SELECT id FROM app.users WHERE external_code = :code"),
+                {"code": external_code},
+            ).scalar_one_or_none()
+        if agent_id is None:
+            unknown_agents[external_code] = unknown_agents.get(external_code, 0) + 1
+            continue
+
+        filename = Path(urlparse(location).path).name or f"{uuid.uuid4().hex}.mp3"
+        try:
+            response = requests.get(location, timeout=30)
+            response.raise_for_status()
+            audio_bytes = response.content
+        except Exception as exc:  # noqa: BLE001 - una descarga fallida no debe tumbar el resto del lote
+            failed_downloads.append(f"{filename}: {exc}")
+            continue
+
+        try:
+            with tenant_connection() as (conn, tenant_id):
+                call_id = conn.execute(
+                    text(
+                        "INSERT INTO app.calls (tenant_id, agent_id, uploaded_by, occurred_at, phone_number) "
+                        "VALUES (:tenant_id, :agent_id, :uploaded_by, :occurred_at, :phone_number) RETURNING id"
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "agent_id": agent_id,
+                        "uploaded_by": user["id"],
+                        "occurred_at": _parse_occurred_at(location, start_time_raw),
+                        "phone_number": _normalize_phone(phone_raw, location),
+                    },
+                ).scalar_one()
+
+                extension = Path(filename).suffix.lstrip(".") or "mp3"
+                storage_path = sharded_recording_path(call_id, extension)
+                storage_path.write_bytes(audio_bytes)
+
+                conn.execute(
+                    text(
+                        "INSERT INTO app.recordings "
+                        "(tenant_id, call_id, storage_path, source_url, original_filename, checksum_sha256, format) "
+                        "VALUES (:tenant_id, :call_id, :storage_path, :source_url, :original_filename, :checksum, :format)"
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "call_id": call_id,
+                        "storage_path": str(storage_path),
+                        "source_url": location,
+                        "original_filename": filename,
+                        "checksum": hashlib.sha256(audio_bytes).hexdigest(),
+                        "format": extension,
+                    },
+                )
+            loaded += 1
+        except Exception as exc:  # noqa: BLE001 - una fila mala no debe tumbar el resto del lote
+            failed_downloads.append(f"{filename}: error al guardar en la base ({exc})")
+
+    return templates.TemplateResponse(
+        request,
+        "calls_upload_csv_result.html",
+        {
+            "user": user,
+            "loaded": loaded,
+            "skipped_blank": skipped_blank,
+            "skipped_no_location": skipped_no_location,
+            "unknown_agents": unknown_agents,
+            "failed_downloads": failed_downloads,
+        },
+    )
+
+
+# Formatos que Whisper acepta (mismo listado que devuelve su API cuando
+# rechaza un archivo) -- filtra basura de zips (__MACOSX, .DS_Store, etc.)
+# sin rechazar nada que si se pudiera transcribir despues.
+ALLOWED_AUDIO_EXT = {".flac", ".m4a", ".mp3", ".mp4", ".mpeg", ".mpga", ".oga", ".ogg", ".wav", ".webm"}
+
+
+@app.post("/calls/upload-zip")
+async def upload_calls_zip(
+    request: Request, file: UploadFile = File(...), agent_id: str = Form(...), client_id: str = Form(...)
+):
+    """Carga masiva por ZIP: un archivo de audio por llamada, sueltos (sin
+    carpetas), todos para el mismo gestor y el mismo cliente elegidos en la
+    pantalla -- para cuando las grabaciones ya se tienen a mano y no hace
+    falta descargarlas de una URL (a diferencia de /calls/upload-csv).
+    Telefono y fecha se intentan sacar del nombre del archivo, igual que en
+    la carga por CSV. Tampoco transcribe/analiza de una vez."""
+    user = require_admin(request)
+    if isinstance(user, RedirectResponse):
+        return user
+
+    raw = await file.read()
+    loaded = 0
+    skipped_not_audio = 0
+    failed: list[str] = []
+
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(raw))
+    except zipfile.BadZipFile:
+        return templates.TemplateResponse(
+            request,
+            "calls_upload_zip_result.html",
+            {"user": user, "loaded": 0, "skipped_not_audio": 0, "failed": ["El archivo no es un ZIP válido."]},
+        )
+
+    for entry in archive.infolist():
+        if entry.is_dir():
+            continue
+        filename = Path(entry.filename).name
+        extension = Path(filename).suffix.lower()
+        if extension not in ALLOWED_AUDIO_EXT:
+            skipped_not_audio += 1
+            continue
+
+        try:
+            audio_bytes = archive.read(entry)
+        except Exception as exc:  # noqa: BLE001 - un archivo malo no debe tumbar el resto del lote
+            failed.append(f"{filename}: no se pudo leer del ZIP ({exc})")
+            continue
+
+        try:
+            with tenant_connection() as (conn, tenant_id):
+                call_id = conn.execute(
+                    text(
+                        "INSERT INTO app.calls "
+                        "(tenant_id, client_id, agent_id, uploaded_by, occurred_at, phone_number) "
+                        "VALUES (:tenant_id, :client_id, :agent_id, :uploaded_by, :occurred_at, :phone_number) "
+                        "RETURNING id"
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "client_id": client_id,
+                        "agent_id": agent_id,
+                        "uploaded_by": user["id"],
+                        "occurred_at": _parse_occurred_at(filename, ""),
+                        "phone_number": _normalize_phone(None, filename),
+                    },
+                ).scalar_one()
+
+                storage_path = sharded_recording_path(call_id, extension)
+                storage_path.write_bytes(audio_bytes)
+
+                conn.execute(
+                    text(
+                        "INSERT INTO app.recordings "
+                        "(tenant_id, call_id, storage_path, original_filename, checksum_sha256, format) "
+                        "VALUES (:tenant_id, :call_id, :storage_path, :original_filename, :checksum, :format)"
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "call_id": call_id,
+                        "storage_path": str(storage_path),
+                        "original_filename": filename,
+                        "checksum": hashlib.sha256(audio_bytes).hexdigest(),
+                        "format": extension.lstrip("."),
+                    },
+                )
+            loaded += 1
+        except Exception as exc:  # noqa: BLE001 - un archivo malo no debe tumbar el resto del lote
+            failed.append(f"{filename}: error al guardar en la base ({exc})")
+
+    return templates.TemplateResponse(
+        request,
+        "calls_upload_zip_result.html",
+        {"user": user, "loaded": loaded, "skipped_not_audio": skipped_not_audio, "failed": failed},
+    )
 
 
 # --- reportes ---
@@ -593,6 +942,96 @@ def report_pulso_diario(request: Request, date: str | None = None):
         media_type="application/pdf",
         headers={"Content-Disposition": f"inline; filename=pulso-diario-{report_date.isoformat()}.pdf"},
     )
+
+
+@app.get("/reports/campanas")
+def reports_campanas(request: Request):
+    """De que campaña (SPIN, Bradescard, Banco Azteca) es cada llamada segun
+    lo que se MENCIONA en la transcripcion -- no segun el cliente al que se
+    subio -- para medir campañas y detectar cruces. Solo mira llamadas ya
+    transcritas; no gasta credito de OpenAI (es busqueda de palabra clave,
+    sin IA)."""
+    user = require_role(request, ("calidad", "admin"))
+    if isinstance(user, RedirectResponse):
+        return user
+
+    with tenant_connection() as (conn, _tenant_id):
+        data = build_campaign_report(conn)
+
+    data["calls"] = [{**c, "phone_display": _format_phone(c["phone_number"])} for c in data["calls"]]
+
+    return templates.TemplateResponse(request, "reports_campanas.html", {"user": user, "data": data})
+
+
+def _zip_recordings_response(matching: list[dict], zip_stem: str) -> Response:
+    """Arma un .zip en disco (no en memoria, para no repetir el problema de
+    espacio que ya tuvimos) con las grabaciones de `matching` (cada dict
+    necesita audio_filename/original_filename/call_id) y lo manda como
+    descarga; se borra despues (BackgroundTask)."""
+    tmp_dir = RECORDINGS_DIR.parent / "_tmp_zips"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"{uuid.uuid4().hex}.zip"
+
+    seen_names: set[str] = set()
+    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as zf:
+        for call in matching:
+            source = RECORDINGS_DIR / call["audio_filename"]
+            if not source.exists():
+                continue
+            arcname = call["original_filename"] or call["audio_filename"]
+            if arcname in seen_names:
+                arcname = f"{call['call_id'][:8]}_{arcname}"
+            seen_names.add(arcname)
+            zf.write(source, arcname=arcname)
+
+    safe_name = re.sub(r"[^\w\-]+", "_", zip_stem.lower()).strip("_") or "grabaciones"
+    return FileResponse(
+        path=tmp_path,
+        filename=f"{safe_name}.zip",
+        media_type="application/zip",
+        background=BackgroundTask(lambda: tmp_path.unlink(missing_ok=True)),
+    )
+
+
+@app.get("/reports/campanas/gestor-detectado/download")
+def download_mentioned_agent_recordings(request: Request, name: str):
+    """Descarga en un .zip todas las grabaciones donde la IA detecto que
+    ESE gestor se presento por su nombre durante la llamada -- distinto del
+    gestor asignado en el sistema (util sobre todo para el lote recuperado,
+    donde todas quedaron bajo un mismo gestor placeholder). Declarada ANTES
+    que /reports/campanas/{bucket}/download a proposito: esa ruta generica
+    coincide con la misma forma de URL (2 segmentos + /download) y, si
+    fuera al revez, interceptaria esta con bucket="gestor-detectado"."""
+    user = require_role(request, ("calidad", "admin"))
+    if isinstance(user, RedirectResponse):
+        return user
+
+    with tenant_connection() as (conn, _tenant_id):
+        data = build_campaign_report(conn)
+
+    matching = [c for c in data["calls"] if name in c["agent_names_mentioned"] and c["audio_filename"]]
+    if not matching:
+        return RedirectResponse(url="/reports/campanas", status_code=303)
+
+    return _zip_recordings_response(matching, name)
+
+
+@app.get("/reports/campanas/{bucket}/download")
+def download_campaign_recordings(request: Request, bucket: str):
+    """Descarga en un .zip todas las grabaciones de una campaña detectada
+    (o de 'varias'/'sin detectar')."""
+    user = require_role(request, ("calidad", "admin"))
+    if isinstance(user, RedirectResponse):
+        return user
+
+    with tenant_connection() as (conn, _tenant_id):
+        data = build_campaign_report(conn)
+
+    matching = [c for c in data["calls"] if c["bucket"] == bucket and c["audio_filename"]]
+    if not matching:
+        return RedirectResponse(url="/reports/campanas", status_code=303)
+
+    return _zip_recordings_response(matching, bucket)
 
 
 # --- clientes (carteras): alta, asignar gestores, armar su checklist ---

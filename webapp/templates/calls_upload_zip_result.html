@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Carga de ZIP — PREA Voice Analytics{% endblock %}
+{% block content %}
+    <a class="volver" href="/calls">&larr; Volver a llamadas</a>
+    <h1>Resultado de la carga</h1>
+
+    <div class="tarjeta">
+        <p><strong>{{ loaded }}</strong> llamada{{ "s" if loaded != 1 else "" }} cargada{{ "s" if loaded != 1 else "" }} correctamente (audio guardado, sin transcribir/analizar todavía).</p>
+        {% if skipped_not_audio %}
+        <p>{{ skipped_not_audio }} archivo{{ "s" if skipped_not_audio != 1 else "" }} dentro del ZIP no {{ "eran" if skipped_not_audio != 1 else "era" }} de audio, ignorado{{ "s" if skipped_not_audio != 1 else "" }}.</p>
+        {% endif %}
+    </div>
+
+    {% if failed %}
+    <div class="tarjeta">
+        <h3>Archivos que no se pudieron cargar ({{ failed | length }})</h3>
+        <ul>
+            {% for item in failed %}
+            <li>{{ item }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+{% endblock %}
