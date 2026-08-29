@@ -113,11 +113,26 @@ def _is_empty_call(normalized_text: str) -> bool:
     return any(phrase in normalized_text for phrase in _EMPTY_PHRASES)
 
 
-def build_campaign_report(conn) -> dict:
+DEFAULT_REPORT_LIMIT = 1000
+
+
+def build_campaign_report(conn, limit: int = DEFAULT_REPORT_LIMIT) -> dict:
     """conn ya debe tener tenant_session() activo. Solo mira llamadas que ya
     tienen transcripcion -- las que no, se cuentan aparte para que quede
-    claro que falta transcribirlas antes de aparecer aqui."""
+    claro que falta transcribirlas antes de aparecer aqui.
+
+    limit acota cuantas llamadas se procesan de un jalon (las mas
+    recientes primero). Sin esto, con decenas/cientos de miles de llamadas
+    transcritas el reporte intenta traer y buscar palabra clave en TODAS
+    de golpe cada vez que alguien abre la pagina -- eso fue justo lo que
+    tumbo el servidor con 22,000 llamadas ya transcritas. Los conteos de
+    las tarjetas son sobre lo mostrado, no sobre el total del sistema
+    (total_with_transcript trae el total real aparte, con un count()
+    barato, para poder avisar que hay mas de lo que se ve)."""
     total_calls = conn.execute(text("SELECT count(*) FROM app.calls")).scalar_one()
+    total_with_transcript = conn.execute(
+        text("SELECT count(DISTINCT call_id) FROM app.transcripts WHERE state = 'CURRENT'")
+    ).scalar_one()
 
     rows = conn.execute(
         text(
@@ -135,8 +150,10 @@ def build_campaign_report(conn) -> dict:
             GROUP BY c.id, c.occurred_at, c.uploaded_at, c.phone_number, cl.name, u.full_name,
                      rec.storage_path, rec.original_filename
             ORDER BY COALESCE(c.occurred_at, c.uploaded_at) DESC
+            LIMIT :limit
             """
-        )
+        ),
+        {"limit": limit},
     ).mappings().all()
 
     counts = {name: 0 for name in CAMPAIGNS}
@@ -188,8 +205,10 @@ def build_campaign_report(conn) -> dict:
         "counts": counts,
         "campaign_names": list(CAMPAIGNS.keys()),
         "mentioned_agent_names": mentioned_agent_names,
-        "total_with_transcript": len(rows),
-        "total_without_transcript": total_calls - len(rows),
+        "shown": len(rows),
+        "limit": limit,
+        "total_with_transcript": total_with_transcript,
+        "total_without_transcript": total_calls - total_with_transcript,
         "total_calls": total_calls,
     }
 
@@ -289,16 +308,22 @@ def build_pulso_diario(conn, report_date: date) -> dict:
     }
 
 
-def build_ai_campaign_report(conn) -> dict:
+def build_ai_campaign_report(conn, limit: int = DEFAULT_REPORT_LIMIT) -> dict:
     """Igual proposito que build_campaign_report, pero a partir del analisis
     de IA (webapp/services/campaign_analysis.py, tabla
     app.call_campaign_analysis) en vez de busqueda de palabra clave --
     entiende variantes foneticas mal transcritas ("espin", "es pin") que el
     otro reporte se pierde. Solo mira llamadas que ya tienen ese analisis
-    corrido (scripts/analyze_campaigns.py aparte)."""
+    corrido (scripts/analyze_campaigns.py aparte).
+
+    limit acota cuantas se muestran de un jalon (las mas recientes
+    primero) -- mismo motivo que en build_campaign_report."""
     total_calls = conn.execute(text("SELECT count(*) FROM app.calls")).scalar_one()
     total_with_transcript = conn.execute(
         text("SELECT count(DISTINCT call_id) FROM app.transcripts WHERE state = 'CURRENT'")
+    ).scalar_one()
+    total_analyzed_all = conn.execute(
+        text("SELECT count(*) FROM app.call_campaign_analysis WHERE state = 'CURRENT'")
     ).scalar_one()
 
     rows = conn.execute(
@@ -316,8 +341,10 @@ def build_ai_campaign_report(conn) -> dict:
             LEFT JOIN app.recordings rec ON rec.call_id = c.id
             WHERE a.state = 'CURRENT'
             ORDER BY COALESCE(c.occurred_at, c.uploaded_at) DESC
+            LIMIT :limit
             """
-        )
+        ),
+        {"limit": limit},
     ).mappings().all()
 
     counts = {name: 0 for name in AI_CAMPANAS}
@@ -349,7 +376,9 @@ def build_ai_campaign_report(conn) -> dict:
         "calls": calls,
         "counts": counts,
         "campana_names": list(AI_CAMPANAS_CONOCIDAS),
-        "total_analyzed": len(rows),
+        "shown": len(rows),
+        "limit": limit,
+        "total_analyzed": total_analyzed_all,
         "total_with_transcript": total_with_transcript,
         "total_calls": total_calls,
     }

@@ -12,9 +12,18 @@
     {% if data.total_without_transcript > 0 %}
     <div class="caja">
         <strong>{{ data.total_with_transcript }}</strong> de <strong>{{ data.total_calls }}</strong> llamadas
-        ya están transcritas y aparecen abajo. Las otras
+        ya están transcritas. Las otras
         <strong>{{ data.total_without_transcript }}</strong> todavía no se han transcrito, así que no se pueden
         buscar sus palabras todavía.
+    </div>
+    {% endif %}
+
+    {% if data.total_with_transcript > data.shown %}
+    <div class="caja">
+        Mostrando las <strong>{{ data.shown }}</strong> llamadas transcritas más recientes de
+        <strong>{{ data.total_with_transcript }}</strong> en total — con tantas, cargarlas todas de un jalón
+        tumbaría el servidor. Los conteos de las tarjetas de abajo son sobre estas {{ data.shown }}, no sobre
+        el total. El botón "Descargar todas" por campaña también busca solo dentro de este mismo grupo.
     </div>
     {% endif %}
 

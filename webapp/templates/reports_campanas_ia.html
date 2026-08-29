@@ -13,6 +13,11 @@
     <div class="caja">
         <strong>{{ data.total_analyzed }}</strong> de <strong>{{ data.total_with_transcript }}</strong> llamadas
         transcritas ya tienen este análisis. ({{ data.total_calls }} llamadas en total en el sistema.)
+        {% if data.total_analyzed > data.shown %}
+        <br>Mostrando las <strong>{{ data.shown }}</strong> más recientes en esta pantalla (para no tumbar el
+        servidor) — pero los botones de <strong>"Descargar todas"</strong> sí bajan las {{ data.total_analyzed }}
+        completas, sin ese límite.
+        {% endif %}
     </div>
 
     {% if data.calls %}

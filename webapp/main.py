@@ -1084,16 +1084,30 @@ def reports_campanas_ia(request: Request):
 
 @app.get("/reports/campanas-ia/{campana}/download")
 def download_ai_campaign_recordings(request: Request, campana: str):
-    """Descarga en un .zip todas las grabaciones que la IA clasifico bajo
-    esa campaña."""
+    """Descarga en un .zip TODAS las grabaciones que la IA clasifico bajo
+    esa campaña -- a diferencia de la pantalla del reporte (que limita
+    cuantas muestra de un jalon para no tumbar el servidor), aqui se
+    consulta directo por la columna campana ya guardada, sin ese limite:
+    es un filtro barato (no hay que rebuscar palabra clave en texto),
+    aguanta cualquier volumen."""
     user = require_role(request, ("calidad", "admin"))
     if isinstance(user, RedirectResponse):
         return user
 
     with tenant_connection() as (conn, _tenant_id):
-        data = build_ai_campaign_report(conn)
+        rows = conn.execute(
+            text(
+                """
+                SELECT a.call_id, r.storage_path, r.original_filename
+                FROM app.call_campaign_analysis a
+                JOIN app.recordings r ON r.call_id = a.call_id
+                WHERE a.state = 'CURRENT' AND a.campana = :campana AND r.storage_path IS NOT NULL
+                """
+            ),
+            {"campana": campana},
+        ).mappings().all()
 
-    matching = [c for c in data["calls"] if c["campana"] == campana and c["storage_path"]]
+    matching = [{**r, "call_id": str(r["call_id"])} for r in rows]
     if not matching:
         return RedirectResponse(url="/reports/campanas-ia", status_code=303)
 
