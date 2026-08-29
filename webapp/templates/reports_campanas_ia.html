@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Reporte de campañas (IA) — PREA Voice Analytics{% endblock %}
+{% block content %}
+    <a class="volver" href="/reports/campanas">&larr; Volver al reporte por palabra clave</a>
+    <h1>Reporte de campañas (IA)</h1>
+    <p class="vacio">
+        A qué campaña pertenece cada llamada según <strong>GPT-4o-mini</strong>, no solo búsqueda de palabra
+        exacta — entiende variantes mal transcritas ("espín", "es pin", "spim") y además extrae teléfono,
+        nombre del gestor y nombre del cliente si se mencionan. Corre aparte con
+        <code>scripts/analyze_campaigns.py</code>, no automático.
+    </p>
+
+    <div class="caja">
+        <strong>{{ data.total_analyzed }}</strong> de <strong>{{ data.total_with_transcript }}</strong> llamadas
+        transcritas ya tienen este análisis. ({{ data.total_calls }} llamadas en total en el sistema.)
+    </div>
+
+    {% if data.calls %}
+    <div class="metricas">
+        {% for name in data.campana_names %}
+        <div class="metrica">
+            <div class="numero">{{ data.counts[name] }}</div>
+            <div class="etiqueta">{{ name }}</div>
+            {% if data.counts[name] %}
+            <a class="btn" style="margin-top:0.6rem; display:inline-block; padding: 0.35rem 0.8rem; font-size:0.8rem;"
+               href="/reports/campanas-ia/{{ name | urlencode }}/download">⬇ Descargar todas</a>
+            {% endif %}
+        </div>
+        {% endfor %}
+        <div class="metrica">
+            <div class="numero">{{ data.counts["OTRA"] }}</div>
+            <div class="etiqueta">Otra campaña</div>
+            {% if data.counts["OTRA"] %}
+            <a class="btn" style="margin-top:0.6rem; display:inline-block; padding: 0.35rem 0.8rem; font-size:0.8rem;"
+               href="/reports/campanas-ia/{{ 'OTRA' | urlencode }}/download">⬇ Descargar todas</a>
+            {% endif %}
+        </div>
+        <div class="metrica">
+            <div class="numero">{{ data.counts["NO_DETERMINADA"] }}</div>
+            <div class="etiqueta">No determinada</div>
+            {% if data.counts["NO_DETERMINADA"] %}
+            <a class="btn" style="margin-top:0.6rem; display:inline-block; padding: 0.35rem 0.8rem; font-size:0.8rem;"
+               href="/reports/campanas-ia/{{ 'NO_DETERMINADA' | urlencode }}/download">⬇ Descargar todas</a>
+            {% endif %}
+        </div>
+    </div>
+
+    <table style="width:100%; border-collapse: collapse; margin-top: 1.5rem;">
+        <thead>
+            <tr style="text-align:left; border-bottom: 1px solid var(--borde);">
+                <th style="padding: 0.5rem 0.6rem;">Fecha</th>
+                <th style="padding: 0.5rem 0.6rem;">Teléfono</th>
+                <th style="padding: 0.5rem 0.6rem;">Gestor asignado</th>
+                <th style="padding: 0.5rem 0.6rem;">Cartera asignada</th>
+                <th style="padding: 0.5rem 0.6rem;">Campaña (IA)</th>
+                <th style="padding: 0.5rem 0.6rem;">Confianza</th>
+                <th style="padding: 0.5rem 0.6rem;">Evidencia</th>
+                <th style="padding: 0.5rem 0.6rem;">Teléfono mencionado</th>
+                <th style="padding: 0.5rem 0.6rem;">Gestor mencionado</th>
+                <th style="padding: 0.5rem 0.6rem;">Cliente mencionado</th>
+                <th style="padding: 0.5rem 0.6rem;">Grabación</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for call in data.calls %}
+            <tr style="border-bottom: 1px solid var(--borde);">
+                <td style="padding: 0.5rem 0.6rem; white-space: nowrap;">{{ call.when.strftime("%d/%m/%Y %H:%M") }}</td>
+                <td style="padding: 0.5rem 0.6rem;"><a href="/calls/{{ call.call_id }}">{{ call.phone_display }}</a></td>
+                <td style="padding: 0.5rem 0.6rem;">{{ call.agent_name }}</td>
+                <td style="padding: 0.5rem 0.6rem;">{{ call.assigned_client }}</td>
+                <td style="padding: 0.5rem 0.6rem;">
+                    {% if call.mismatch %}
+                        <span class="badge badge-riesgo">{{ call.campana }}</span>
+                    {% elif call.campana in ("OTRA", "NO_DETERMINADA") %}
+                        <span class="badge badge-sin-evidencia">{{ call.campana }}</span>
+                    {% else %}
+                        <span class="badge badge-cumplido">{{ call.campana }}</span>
+                    {% endif %}
+                </td>
+                <td style="padding: 0.5rem 0.6rem;">{{ call.confianza or "—" }}</td>
+                <td style="padding: 0.5rem 0.6rem; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ call.evidencia or '' }}">
+                    {% if call.evidencia %}<span class="cita">"{{ call.evidencia }}"</span>{% else %}<span class="vacio">—</span>{% endif %}
+                </td>
+                <td style="padding: 0.5rem 0.6rem;">{{ call.telefono_mencionado or "—" }}</td>
+                <td style="padding: 0.5rem 0.6rem;">{{ call.nombre_gestor or "—" }}</td>
+                <td style="padding: 0.5rem 0.6rem;">{{ call.nombre_cliente or "—" }}</td>
+                <td style="padding: 0.5rem 0.6rem;">
+                    {% if call.storage_path %}
+                        <a href="/audio/{{ call.call_id }}" download>⬇ Descargar</a>
+                    {% else %}
+                        <span class="vacio">sin archivo</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+        <p class="vacio">Todavía no hay ninguna llamada con este análisis. Corre <code>scripts/analyze_campaigns.py</code> primero.</p>
+    {% endif %}
+{% endblock %}

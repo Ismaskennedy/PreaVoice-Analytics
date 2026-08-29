@@ -14,6 +14,9 @@ from datetime import date
 
 from sqlalchemy import text
 
+from webapp.services.campaign_analysis import CAMPANAS as AI_CAMPANAS
+from webapp.services.campaign_analysis import CONOCIDAS as AI_CAMPANAS_CONOCIDAS
+
 _MESES = (
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -283,4 +286,70 @@ def build_pulso_diario(conn, report_date: date) -> dict:
         "total_dead_minutes": round(sum(a["total_minutes"] for a in agents), 1),
         "agents": agents,
         "has_data": total_calls > 0,
+    }
+
+
+def build_ai_campaign_report(conn) -> dict:
+    """Igual proposito que build_campaign_report, pero a partir del analisis
+    de IA (webapp/services/campaign_analysis.py, tabla
+    app.call_campaign_analysis) en vez de busqueda de palabra clave --
+    entiende variantes foneticas mal transcritas ("espin", "es pin") que el
+    otro reporte se pierde. Solo mira llamadas que ya tienen ese analisis
+    corrido (scripts/analyze_campaigns.py aparte)."""
+    total_calls = conn.execute(text("SELECT count(*) FROM app.calls")).scalar_one()
+    total_with_transcript = conn.execute(
+        text("SELECT count(DISTINCT call_id) FROM app.transcripts WHERE state = 'CURRENT'")
+    ).scalar_one()
+
+    rows = conn.execute(
+        text(
+            """
+            SELECT a.call_id, a.campana, a.confianza, a.evidencia,
+                   a.telefono_mencionado, a.nombre_gestor, a.nombre_cliente,
+                   c.occurred_at, c.uploaded_at, c.phone_number,
+                   cl.name AS client_name, u.full_name AS agent_name,
+                   rec.storage_path, rec.original_filename
+            FROM app.call_campaign_analysis a
+            JOIN app.calls c ON c.id = a.call_id
+            JOIN app.clients cl ON cl.id = c.client_id
+            JOIN app.users u ON u.id = c.agent_id
+            LEFT JOIN app.recordings rec ON rec.call_id = c.id
+            WHERE a.state = 'CURRENT'
+            ORDER BY COALESCE(c.occurred_at, c.uploaded_at) DESC
+            """
+        )
+    ).mappings().all()
+
+    counts = {name: 0 for name in AI_CAMPANAS}
+    calls = []
+    for row in rows:
+        campana = row["campana"]
+        counts[campana] = counts.get(campana, 0) + 1
+        assigned = (row["client_name"] or "").strip().upper()
+        calls.append(
+            {
+                "call_id": str(row["call_id"]),
+                "when": row["occurred_at"] or row["uploaded_at"],
+                "phone_number": row["phone_number"],
+                "original_filename": row["original_filename"],
+                "agent_name": row["agent_name"],
+                "assigned_client": row["client_name"],
+                "campana": campana,
+                "confianza": row["confianza"],
+                "evidencia": row["evidencia"],
+                "telefono_mencionado": row["telefono_mencionado"],
+                "nombre_gestor": row["nombre_gestor"],
+                "nombre_cliente": row["nombre_cliente"],
+                "mismatch": campana in AI_CAMPANAS_CONOCIDAS and assigned != campana,
+                "storage_path": row["storage_path"],
+            }
+        )
+
+    return {
+        "calls": calls,
+        "counts": counts,
+        "campana_names": list(AI_CAMPANAS_CONOCIDAS),
+        "total_analyzed": len(rows),
+        "total_with_transcript": total_with_transcript,
+        "total_calls": total_calls,
     }

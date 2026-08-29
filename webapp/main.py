@@ -35,7 +35,7 @@ from webapp.config import RECORDINGS_DIR, SECRET_KEY, sharded_recording_path
 from webapp.db import tenant_connection
 from webapp.openai_client import get_openai_client
 from webapp.services.analysis import analyze, compute_score
-from webapp.services.reports import build_campaign_report, build_pulso_diario
+from webapp.services.reports import build_ai_campaign_report, build_campaign_report, build_pulso_diario
 from webapp.services.transcription import assess_audio_quality, transcribe
 
 app = FastAPI(title="PREA Voice Analytics")
@@ -1063,6 +1063,41 @@ def download_campaign_recordings(request: Request, bucket: str):
         return RedirectResponse(url="/reports/campanas", status_code=303)
 
     return _zip_recordings_response(matching, bucket)
+
+
+@app.get("/reports/campanas-ia")
+def reports_campanas_ia(request: Request):
+    """Igual proposito que /reports/campanas, pero con el analisis de IA
+    (GPT-4o-mini) que si entiende variantes foneticas mal transcritas --
+    corre aparte con scripts/analyze_campaigns.py, no automatico."""
+    user = require_role(request, ("calidad", "admin"))
+    if isinstance(user, RedirectResponse):
+        return user
+
+    with tenant_connection() as (conn, _tenant_id):
+        data = build_ai_campaign_report(conn)
+
+    data["calls"] = [{**c, "phone_display": _format_phone(c["phone_number"])} for c in data["calls"]]
+
+    return templates.TemplateResponse(request, "reports_campanas_ia.html", {"user": user, "data": data})
+
+
+@app.get("/reports/campanas-ia/{campana}/download")
+def download_ai_campaign_recordings(request: Request, campana: str):
+    """Descarga en un .zip todas las grabaciones que la IA clasifico bajo
+    esa campaña."""
+    user = require_role(request, ("calidad", "admin"))
+    if isinstance(user, RedirectResponse):
+        return user
+
+    with tenant_connection() as (conn, _tenant_id):
+        data = build_ai_campaign_report(conn)
+
+    matching = [c for c in data["calls"] if c["campana"] == campana and c["storage_path"]]
+    if not matching:
+        return RedirectResponse(url="/reports/campanas-ia", status_code=303)
+
+    return _zip_recordings_response(matching, campana)
 
 
 # --- clientes (carteras): alta, asignar gestores, armar su checklist ---

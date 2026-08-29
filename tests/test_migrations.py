@@ -56,6 +56,7 @@ def test_upgrade_downgrade_cycle(engine, alembic_runner):
             "agent_assignments",
             "call_analyses",
             "call_analysis_findings",
+            "call_campaign_analysis",
             "call_coaching_suggestions",
             "call_evaluation_corrections",
             "call_evaluations",
