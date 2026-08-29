@@ -116,6 +116,85 @@ def _is_empty_call(normalized_text: str) -> bool:
 DEFAULT_REPORT_LIMIT = 1000
 
 
+def _detect_bucket(normalized_text: str) -> tuple[list[str], str]:
+    detected = [
+        name
+        for name, keywords in CAMPAIGNS.items()
+        if any(re.search(rf"\b{re.escape(kw)}\b", normalized_text) for kw in keywords)
+    ]
+    if len(detected) == 1:
+        bucket = detected[0]
+    elif len(detected) > 1:
+        bucket = "varias"
+    elif _is_empty_call(normalized_text):
+        bucket = "vacía"
+    else:
+        bucket = "sin detectar"
+    return detected, bucket
+
+
+def _all_transcribed_calls_with_text(conn) -> list:
+    """Trae TODAS las llamadas transcritas con grabacion, sin el LIMIT del
+    reporte en pantalla -- solo para las descargas 'Descargar todas'
+    (find_calls_for_campaign_download / find_calls_for_agent_download). Es
+    una accion puntual que se dispara al hacer click, no una carga que se
+    repite en cada vista de pagina como el reporte, asi que aqui si se puede
+    procesar todo de un jalon sin repetir el problema que tumbo el
+    servidor."""
+    return conn.execute(
+        text(
+            """
+            SELECT c.id AS call_id, rec.storage_path, rec.original_filename,
+                   string_agg(ts.text, ' ' ORDER BY ts.start_ms) AS full_text
+            FROM app.calls c
+            JOIN app.recordings rec ON rec.call_id = c.id
+            JOIN app.transcripts t ON t.call_id = c.id AND t.state = 'CURRENT'
+            JOIN app.transcript_segments ts ON ts.transcript_id = t.id
+            WHERE rec.storage_path IS NOT NULL
+            GROUP BY c.id, rec.storage_path, rec.original_filename
+            """
+        )
+    ).mappings().all()
+
+
+def find_calls_for_campaign_download(conn, bucket: str) -> list[dict]:
+    """Todas las llamadas (sin limite) cuya campaña detectada por palabra
+    clave cae en `bucket` -- para el boton 'Descargar todas' del reporte
+    gratis, que a diferencia de la tabla en pantalla si debe bajar el total
+    completo, no solo lo mostrado."""
+    matching = []
+    for row in _all_transcribed_calls_with_text(conn):
+        normalized = _normalize(row["full_text"] or "")
+        _detected, row_bucket = _detect_bucket(normalized)
+        if row_bucket == bucket:
+            matching.append(
+                {
+                    "call_id": str(row["call_id"]),
+                    "storage_path": row["storage_path"],
+                    "original_filename": row["original_filename"],
+                }
+            )
+    return matching
+
+
+def find_calls_for_agent_download(conn, name: str) -> list[dict]:
+    """Todas las llamadas (sin limite) donde el gestor `name` se presento
+    por su nombre durante la llamada -- mismo motivo que
+    find_calls_for_campaign_download."""
+    matching = []
+    for row in _all_transcribed_calls_with_text(conn):
+        normalized = _normalize(row["full_text"] or "")
+        if name in _find_agent_names(normalized):
+            matching.append(
+                {
+                    "call_id": str(row["call_id"]),
+                    "storage_path": row["storage_path"],
+                    "original_filename": row["original_filename"],
+                }
+            )
+    return matching
+
+
 def build_campaign_report(conn, limit: int = DEFAULT_REPORT_LIMIT) -> dict:
     """conn ya debe tener tenant_session() activo. Solo mira llamadas que ya
     tienen transcripcion -- las que no, se cuentan aparte para que quede
@@ -164,19 +243,7 @@ def build_campaign_report(conn, limit: int = DEFAULT_REPORT_LIMIT) -> dict:
     calls = []
     for row in rows:
         normalized = _normalize(row["full_text"] or "")
-        detected = [
-            name
-            for name, keywords in CAMPAIGNS.items()
-            if any(re.search(rf"\b{re.escape(kw)}\b", normalized) for kw in keywords)
-        ]
-        if len(detected) == 1:
-            bucket = detected[0]
-        elif len(detected) > 1:
-            bucket = "varias"
-        elif _is_empty_call(normalized):
-            bucket = "vacía"
-        else:
-            bucket = "sin detectar"
+        detected, bucket = _detect_bucket(normalized)
         counts[bucket] += 1
 
         assigned = (row["client_name"] or "").strip().upper()

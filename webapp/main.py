@@ -35,7 +35,13 @@ from webapp.config import RECORDINGS_DIR, SECRET_KEY, sharded_recording_path
 from webapp.db import tenant_connection
 from webapp.openai_client import get_openai_client
 from webapp.services.analysis import analyze, compute_score
-from webapp.services.reports import build_ai_campaign_report, build_campaign_report, build_pulso_diario
+from webapp.services.reports import (
+    build_ai_campaign_report,
+    build_campaign_report,
+    build_pulso_diario,
+    find_calls_for_agent_download,
+    find_calls_for_campaign_download,
+)
 from webapp.services.transcription import assess_audio_quality, transcribe
 
 app = FastAPI(title="PREA Voice Analytics")
@@ -1038,9 +1044,8 @@ def download_mentioned_agent_recordings(request: Request, name: str):
         return user
 
     with tenant_connection() as (conn, _tenant_id):
-        data = build_campaign_report(conn)
+        matching = find_calls_for_agent_download(conn, name)
 
-    matching = [c for c in data["calls"] if name in c["agent_names_mentioned"] and c["storage_path"]]
     if not matching:
         return RedirectResponse(url="/reports/campanas", status_code=303)
 
@@ -1050,15 +1055,15 @@ def download_mentioned_agent_recordings(request: Request, name: str):
 @app.get("/reports/campanas/{bucket}/download")
 def download_campaign_recordings(request: Request, bucket: str):
     """Descarga en un .zip todas las grabaciones de una campaña detectada
-    (o de 'varias'/'sin detectar')."""
+    (o de 'varias'/'sin detectar') -- el total completo que coincide, no
+    solo lo que se ve en pantalla (que esta limitado, ver build_campaign_report)."""
     user = require_role(request, ("calidad", "admin"))
     if isinstance(user, RedirectResponse):
         return user
 
     with tenant_connection() as (conn, _tenant_id):
-        data = build_campaign_report(conn)
+        matching = find_calls_for_campaign_download(conn, bucket)
 
-    matching = [c for c in data["calls"] if c["bucket"] == bucket and c["storage_path"]]
     if not matching:
         return RedirectResponse(url="/reports/campanas", status_code=303)
 
